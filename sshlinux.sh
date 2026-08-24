@@ -134,7 +134,7 @@ fetch_shshhost_blob() {
     echo "[*] Checking shsh.host for a previously saved blob for ECID $ecid_value..."
     api_json="$(curl -fsSL --retry 3 --retry-all-errors "https://api.arx8x.net/shsh3/list.php?ecid=$ecid_value" 2>/dev/null || true)"
     [[ -n "$api_json" ]] || return 1
-    url="$(jq -r --arg dev "$PRODUCT" --arg board "$MODEL" --arg ver "$ios_version" '\n        .. | objects | select(.url? and .version? and .device? and .boardconfig?)\n        | select(.device==$dev and (.boardconfig|ascii_downcase)==($board|ascii_downcase) and .version==$ver)\n        | .url' <<<"$api_json" 2>/dev/null | head -n1)"
+    url="$(jq -r --arg dev "$PRODUCT" --arg board "$MODEL" --arg ver "$ios_version" '.\n        .. | objects | select(.url? and .version? and .device? and .boardconfig?)\n        | select(.device==$dev and (.boardconfig|ascii_downcase)==($board|ascii_downcase) and .version==$ver)\n        | .url' <<<"$api_json" 2>/dev/null | head -n1)"
     [[ -n "$url" && "$url" != "null" ]] || return 1
     mkdir -p "$HOME/.cache/sshlinux"
     SHSH_PATH="$HOME/.cache/sshlinux/${CPID}.shsh2"
@@ -156,18 +156,12 @@ request_signed_blob() {
 
 find_or_create_shsh() {
     local ios_version="$1"
-    if find_local_shsh; then
-        echo "[*] Using local SHSH: $SHSH_PATH"; return 0
-    fi
-    if fetch_shshhost_blob "$ios_version"; then
-        echo "[*] Found a previously saved SHSH2 on shsh.host: $SHSH_PATH"; return 0
-    fi
-    if request_signed_blob "$ios_version"; then
-        echo "[*] Apple returned a fresh signing ticket: $SHSH_PATH"; return 0
-    fi
+    if find_local_shsh; then echo "[*] Using local SHSH: $SHSH_PATH"; return 0; fi
+    if fetch_shshhost_blob "$ios_version"; then echo "[*] Found a previously saved SHSH2 on shsh.host: $SHSH_PATH"; return 0; fi
+    if request_signed_blob "$ios_version"; then echo "[*] Apple returned a fresh signing ticket: $SHSH_PATH"; return 0; fi
     echo "[!] No usable SHSH blob was found for $PRODUCT $ios_version."
-    echo "[!] The target firmware is not currently signed, and no previously saved blob was found for this ECID."
-    echo "[!] A new personalized SHSH cannot be created for an unsigned firmware; you need a saved blob." 
+    echo "[!] The target firmware is not currently signed, and no saved blob was found for this ECID."
+    echo "[!] A new personalized SHSH cannot be created for an unsigned firmware; you need a saved blob."
     echo "[*] You can place it at: $SCRIPT_DIR/other/shsh/${CPID}.shsh2"
     exit 1
 }
@@ -175,6 +169,47 @@ find_or_create_shsh() {
 choose_repo() {
     if [[ -n "${2:-}" ]]; then REPO="$2"; else read -r -e -p "GitHub repository [$DEFAULT_REPO]: " REPO; REPO="${REPO:-$DEFAULT_REPO}"; fi
     gh repo view "$REPO" >/dev/null 2>&1 || { echo "[!] Cannot access repository: $REPO"; exit 1; }
+}
+
+fetch_run_logs() {
+    local run_id="$1" repo="$2" job_id job_name log_tmp
+    echo "[*] Fetching workflow logs..."
+    while read -r job_id job_name; do
+        [[ -n "$job_id" ]] || continue
+        echo
+        echo "===== JOB: $job_name ====="
+        log_tmp="$SCRIPT_DIR/.sshlinux-job-$job_id.log"
+        if gh api "/repos/$repo/actions/jobs/$job_id/logs" >"$log_tmp" 2>/dev/null; then
+            cat "$log_tmp"
+            rm -f "$log_tmp"
+        else
+            echo "[!] Failed to fetch logs for job $job_id"
+        fi
+    done < <(gh run view "$run_id" --repo "$repo" --json jobs --jq '.jobs[] | [.databaseId, .name] | @tsv')
+}
+
+wait_for_run() {
+    local run_id="$1" repo="$2" status conclusion
+    while true; do
+        status="$(gh run view "$run_id" --repo "$repo" --json status --jq '.status')"
+        conclusion="$(gh run view "$run_id" --repo "$repo" --json conclusion --jq '.conclusion // empty')"
+        case "$status" in
+            completed)
+                fetch_run_logs "$run_id" "$repo"
+                [[ "$conclusion" == "success" ]] && return 0
+                echo "[!] Workflow completed with conclusion: ${conclusion:-unknown}" >&2
+                return 1
+                ;;
+            queued|in_progress|pending|requested|waiting)
+                echo "[*] macOS workflow status: $status"
+                sleep 5
+                ;;
+            *)
+                echo "[!] Unknown workflow status: $status" >&2
+                sleep 5
+                ;;
+        esac
+    done
 }
 
 run_build() {
@@ -195,9 +230,8 @@ run_build() {
         sleep 2
     done
     [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "[!] Could not locate the dispatched workflow run."; exit 1; }
-    echo "[*] Workflow run: $run_id"; echo "[*] Streaming macOS build logs:"; echo
-    gh run watch "$run_id" --repo "$REPO" --interval 3 --log
-    [[ "$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')" == "success" ]] || { echo "[!] Workflow failed."; exit 1; }
+    echo "[*] Workflow run: $run_id"
+    wait_for_run "$run_id" "$REPO" || exit 1
     echo "[*] Downloading ramdisk artifact..."
     download_dir="$SCRIPT_DIR/.sshlinux-download-$request_id"; rm -rf "$download_dir"; mkdir -p "$download_dir"
     gh run download "$run_id" --repo "$REPO" -n "sshramdisk-${PRODUCT}" -D "$download_dir"
@@ -208,10 +242,7 @@ run_build() {
     echo "[*] Ramdisk downloaded to: $RAMDISK_DIR"; ls -lh "$RAMDISK_DIR"; echo "[*] Build complete. Run: ./sshlinux.sh boot"
 }
 
-ensure_ramdisk() {
-    ramdisk_ready && { echo "[*] Using local SSH ramdisk: $RAMDISK_DIR"; return 0; }
-    echo "[!] No local ramdisk found. Run: ./sshlinux.sh build"; exit 1
-}
+ensure_ramdisk() { ramdisk_ready && { echo "[*] Using local SSH ramdisk: $RAMDISK_DIR"; return 0; }; echo "[!] No local ramdisk found. Run: ./sshlinux.sh build"; exit 1; }
 
 boot_ramdisk() {
     ensure_ramdisk
@@ -236,16 +267,12 @@ Usage:
   ./sshlinux.sh build [owner/repo]
   ./sshlinux.sh boot
 
-build: Fedora 44 dependency setup, GitHub login, automatic SHSH resolution,
-       macOS GitHub Actions build, live logs, and automatic ramdisk download.
+build:
+  Installs Fedora dependencies automatically, reads device identifiers, finds/requests
+  the SHSH blob, dispatches the macOS builder, prints its logs, and downloads the ramdisk.
 
-The SHSH resolver tries, in order:
-  1. local .shsh/.shsh2
-  2. a previously saved matching blob on shsh.host
-  3. Apple's TSS server via tsschecker when the target is currently signed
-
-For an unsigned firmware with no previously saved blob, creation of a new
-personalized SHSH is not possible; the script will stop instead of pretending.
+boot:
+  Uses the locally built/downloaded ./sshramdisk.
 EOF
 }
 
