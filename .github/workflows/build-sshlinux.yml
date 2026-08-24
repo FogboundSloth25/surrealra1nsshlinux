@@ -66,7 +66,7 @@ jobs:
             sshramdisk
 
       - name: Publish latest ramdisk for this device
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "ramdisk-${{ inputs.product }}"
           name: "SSH ramdisk - ${{ inputs.product }}"
@@ -81,4 +81,5 @@ jobs:
             The Linux launcher automatically downloads this release when its local sshramdisk is missing.
           files: release/sshramdisk-${{ inputs.product }}.tar.gz
           fail_on_unmatched_files: true
+          overwrite_files: true
           make_latest: false
