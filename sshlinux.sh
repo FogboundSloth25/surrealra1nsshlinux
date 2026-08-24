@@ -13,11 +13,122 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     exit 1
 fi
 
-IRECOVERY="$BIN_DIR/irecovery"
-GASTER="$BIN_DIR/gaster"
+install_fedora_dependencies() {
+    if [[ ! -r /etc/os-release ]]; then
+        echo "[!] /etc/os-release is missing; cannot detect Fedora."
+        exit 1
+    fi
 
-[[ -x "$IRECOVERY" ]] || { echo "[!] Missing $IRECOVERY"; exit 1; }
-[[ -x "$GASTER" ]] || { echo "[!] Missing $GASTER"; exit 1; }
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    if [[ "${ID:-}" != "fedora" ]]; then
+        echo "[!] This build of sshlinux.sh is configured for Fedora Linux."
+        echo "[!] Detected: ${PRETTY_NAME:-unknown}"
+        exit 1
+    fi
+
+    if [[ "${VERSION_ID:-}" != "44" ]]; then
+        echo "[!] This build is tested/configured for Fedora 44."
+        echo "[!] Detected Fedora ${VERSION_ID:-unknown}; continuing may still work."
+    fi
+
+    local packages=(
+        gh
+        git
+        curl
+        jq
+        ca-certificates
+        tar
+        gzip
+        unzip
+        xz
+        file
+        usbutils
+        libusb1
+        libusbmuxd
+        libusbmuxd-utils
+        usbmuxd
+        libimobiledevice
+        libimobiledevice-utils
+        libirecovery
+        libirecovery-utils
+        python3
+        python3-pip
+        openssl
+        procps-ng
+    )
+
+    local missing=()
+    local pkg
+    for pkg in "${packages[@]}"; do
+        if ! rpm -q "$pkg" >/dev/null 2>&1; then
+            missing+=("$pkg")
+        fi
+    done
+
+    if ((${#missing[@]} > 0)); then
+        echo "[*] Installing Fedora dependencies: ${missing[*]}"
+        sudo -v
+        sudo dnf -y install "${missing[@]}"
+    else
+        echo "[*] Fedora dependencies are already installed."
+    fi
+
+    # libirecovery installs udev rules. Reload them after installation so a
+    # device entering DFU is recognized without requiring a reboot.
+    sudo udevadm control --reload-rules >/dev/null 2>&1 || true
+    sudo udevadm trigger >/dev/null 2>&1 || true
+}
+
+install_fedora_dependencies
+
+# Prefer the repository-provided tool when present, otherwise use Fedora's
+# packaged libirecovery utility.
+if [[ -x "$BIN_DIR/irecovery" ]]; then
+    IRECOVERY="$BIN_DIR/irecovery"
+elif command -v irecovery >/dev/null 2>&1; then
+    IRECOVERY="$(command -v irecovery)"
+else
+    echo "[!] irecovery is unavailable even after installing libirecovery-utils."
+    exit 1
+fi
+
+# gaster is not a Fedora package. Keep the binary local to the project and
+# fetch the upstream Linux build automatically when it is missing.
+ensure_gaster() {
+    if [[ -x "$BIN_DIR/gaster" ]]; then
+        GASTER="$BIN_DIR/gaster"
+        return 0
+    fi
+
+    if [[ "$(uname -m)" != "x86_64" ]]; then
+        echo "[!] No automatic gaster binary is configured for $(uname -m)."
+        echo "[!] Put a compatible gaster binary at $BIN_DIR/gaster."
+        exit 1
+    fi
+
+    mkdir -p "$BIN_DIR"
+    local archive="$SCRIPT_DIR/.gaster-linux-x86_64.zip"
+    echo "[*] gaster is missing; downloading upstream Linux x86_64 build..."
+    curl -fL --retry 3 --retry-all-errors \
+        "https://nightly.link/verygenericname/gaster/workflows/makefile/main/gaster-Linux-x86_64.zip" \
+        -o "$archive"
+    unzip -o "$archive" -d "$BIN_DIR/.gaster-extract" >/dev/null
+    if [[ -f "$BIN_DIR/.gaster-extract/gaster" ]]; then
+        mv "$BIN_DIR/.gaster-extract/gaster" "$BIN_DIR/gaster"
+    elif [[ -f "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" ]]; then
+        mv "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" "$BIN_DIR/gaster"
+    else
+        echo "[!] Could not locate gaster in the downloaded archive."
+        rm -rf "$BIN_DIR/.gaster-extract" "$archive"
+        exit 1
+    fi
+    rm -rf "$BIN_DIR/.gaster-extract" "$archive"
+    chmod 0755 "$BIN_DIR/gaster"
+    GASTER="$BIN_DIR/gaster"
+}
+
+ensure_gaster
 
 ramdisk_ready() {
     local f
@@ -29,27 +140,27 @@ ramdisk_ready() {
 
 get_device_info() {
     local info
-    info="$("$IRECOVERY" -q 2>/dev/null || true)"
+    info="$($IRECOVERY -q 2>/dev/null || true)"
     CPID="$(awk -F': ' '$1=="CPID"{print $2; exit}' <<<"$info")"
     MODEL="$(awk -F': ' '$1=="MODEL"{print $2; exit}' <<<"$info")"
     PRODUCT="$(awk -F': ' '$1=="PRODUCT"{print $2; exit}' <<<"$info")"
     [[ -n "$CPID" && -n "$MODEL" && -n "$PRODUCT" ]] || {
         echo "[!] Could not read CPID/MODEL/PRODUCT from irecovery."
         echo "[!] Put the device in DFU mode and try again."
+        echo "[!] Try: $IRECOVERY -q"
         exit 1
     }
 }
 
 require_gh() {
     command -v gh >/dev/null 2>&1 || {
-        echo "[!] GitHub CLI (gh) is required."
-        echo "    Fedora: sudo dnf install gh"
+        echo "[!] GitHub CLI (gh) is required and should have been installed automatically."
         exit 1
     }
 
     if ! gh auth status >/dev/null 2>&1; then
         echo "[*] GitHub CLI is not authenticated."
-        echo "[*] Starting GitHub device login..."
+        echo "[*] Starting GitHub device/browser login..."
         gh auth login --web --git-protocol https
     fi
 
@@ -295,16 +406,24 @@ Usage:
   ./sshlinux.sh boot
 
 build:
-  Reads PRODUCT/MODEL/CPID from irecovery, asks for the iOS version,
-  authenticates to GitHub with gh, dispatches the macOS builder, streams
-  the workflow logs to this terminal, then downloads the generated ramdisk.
+  Installs/updates Fedora dependencies automatically, reads PRODUCT/MODEL/CPID
+  from irecovery, authenticates to GitHub with gh, dispatches the macOS builder,
+  streams the workflow logs to this terminal, then downloads the generated ramdisk.
 
 boot:
   Uses ./sshramdisk, or downloads the latest successful matching artifact
   from GitHub before booting it.
 
-Environment:
-  IOS_VERSION=15.6.1 ./sshlinux.sh build owner/repo
+Fedora 44 dependencies installed automatically:
+  gh git curl jq libusb1 libusbmuxd libusbmuxd-utils usbmuxd
+  libimobiledevice libimobiledevice-utils libirecovery libirecovery-utils
+  usbutils ca-certificates tar gzip unzip xz file python3 python3-pip
+  openssl procps-ng
+
+Examples:
+  ./sshlinux.sh build
+  ./sshlinux.sh build FogboundSloth25/surrealra1nsshlinux
+  IOS_VERSION=15.6.1 ./sshlinux.sh build
   SSHLINUX_REPO=owner/repo ./sshlinux.sh boot
 EOF
 }
