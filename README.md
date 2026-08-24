@@ -4,7 +4,7 @@ A tethered downgrade / boot project for supported checkm8 devices.
 
 ## SSHLinux ramdisk workflow
 
-The Apple SSH ramdisk is built on a **macOS GitHub Actions runner** because the SSHRD build uses Apple's `hdiutil` and HFS+ image handling. The build follows the upstream `verygenericname/SSHRD_Script` flow and produces:
+The Apple SSH ramdisk is built on a **macOS GitHub Actions runner** because the SSHRD build uses Apple's `hdiutil` and HFS+ image handling. The builder follows the upstream `verygenericname/SSHRD_Script` flow and produces:
 
 ```text
 sshramdisk/
@@ -18,27 +18,44 @@ sshramdisk/
 └── version.txt
 ```
 
-Run **Actions → Build SSHLinux ramdisk (macOS) → Run workflow** and provide:
+### Build from Fedora/Linux
 
-- `ios_version` — target iOS version.
-- `product` — `PRODUCT` from `irecovery -q`, for example `iPhone10,6`.
-- `model` — `MODEL` from `irecovery -q`.
-- `cpid` — `CPID` from `irecovery -q`.
-- `shsh_url` — URL to the matching SHSH/SHSH2 ticket used to create the IM4M.
-
-The workflow publishes the resulting ramdisk as the device-specific release tag:
-
-```text
-ramdisk-<PRODUCT>
-```
-
-The Linux launcher `./sshlinux.sh boot` first checks the local `./sshramdisk/`. When it is missing/incomplete, it reads `PRODUCT` with `irecovery` and automatically downloads the latest macOS-built ramdisk for that device from the corresponding GitHub Release.
-
-You can override the download URL with:
+Use one command:
 
 ```bash
-SSHLINUX_RAMDISK_URL="https://example.invalid/sshramdisk.tar.gz" ./sshlinux.sh boot
+./sshlinux.sh build owner/repository
 ```
+
+Or omit the repository and let the script ask:
+
+```bash
+./sshlinux.sh build
+```
+
+The script:
+
+1. Reads `CPID`, `MODEL` and `PRODUCT` from `irecovery -q`.
+2. Authenticates through the GitHub CLI (`gh`) when necessary.
+3. Asks for the target iOS version.
+4. Finds a matching local SHSH/SHSH2 ticket, or asks for its local path.
+5. Dispatches `.github/workflows/build-sshlinux.yml` on a macOS runner.
+6. Streams the GitHub Actions log back into the same terminal.
+7. Downloads the successful `sshramdisk-<PRODUCT>` artifact.
+8. Extracts the ramdisk into `./sshramdisk/`.
+
+The macOS runner never needs the physical iPhone/iPad. The local device identifiers are supplied to the workflow, while the workflow performs the IPSW/BuildManifest/ramdisk assembly on macOS.
+
+### Boot
+
+After a successful build:
+
+```bash
+./sshlinux.sh boot
+```
+
+The launcher uses the local `./sshramdisk/`. When it is missing, it can look for a previous successful matching artifact in the configured GitHub repository and download it automatically.
+
+The personalized SHSH/SHSH2 ticket is not uploaded anywhere except as a workflow-dispatch input needed for the build; the macOS builder removes the temporary ticket from its workspace after creating the ramdisk. For a public repository, workflow inputs may be visible to users who can view workflow runs, so using a private repository is preferable when the ticket should not be exposed.
 
 ## Existing surrealra1n usage
 
