@@ -7,6 +7,7 @@ BIN_DIR="$SCRIPT_DIR/Linux"
 DEFAULT_REPO="FogboundSloth25/surrealra1nsshlinux"
 WORKFLOW_FILE=".github/workflows/build-sshlinux.yml"
 BRANCH="development"
+TSSCHECKER_DIR="$SCRIPT_DIR/.cache/tsschecker"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "[!] sshlinux.sh is intended to run on Linux."
@@ -14,128 +15,53 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 install_fedora_dependencies() {
-    if [[ ! -r /etc/os-release ]]; then
-        echo "[!] /etc/os-release is missing; cannot detect Fedora."
-        exit 1
-    fi
-
-    # shellcheck disable=SC1091
     source /etc/os-release
-    if [[ "${ID:-}" != "fedora" ]]; then
-        echo "[!] This build of sshlinux.sh is configured for Fedora Linux."
-        echo "[!] Detected: ${PRETTY_NAME:-unknown}"
-        exit 1
-    fi
+    [[ "${ID:-}" == "fedora" ]] || { echo "[!] Fedora Linux is required."; exit 1; }
+    [[ "${VERSION_ID:-}" == "44" ]] || echo "[!] Tested on Fedora 44; detected Fedora ${VERSION_ID:-unknown}."
 
-    if [[ "${VERSION_ID:-}" != "44" ]]; then
-        echo "[!] This build is tested/configured for Fedora 44."
-        echo "[!] Detected Fedora ${VERSION_ID:-unknown}; continuing may still work."
-    fi
-
-    local packages=(
-        gh
-        git
-        curl
-        jq
-        ca-certificates
-        tar
-        gzip
-        unzip
-        xz
-        file
-        usbutils
-        libusb1
-        libusbmuxd
-        libusbmuxd-utils
-        usbmuxd
-        libimobiledevice
-        libimobiledevice-utils
-        libirecovery
-        libirecovery-utils
-        python3
-        python3-pip
-        openssl
-        procps-ng
-    )
-
-    local missing=()
-    local pkg
+    local packages=(gh git curl jq ca-certificates tar gzip unzip xz file usbutils libusb1 libusbmuxd libusbmuxd-utils usbmuxd libimobiledevice libimobiledevice-utils libirecovery libirecovery-utils python3 python3-pip openssl procps-ng)
+    local missing=() pkg
     for pkg in "${packages[@]}"; do
-        if ! rpm -q "$pkg" >/dev/null 2>&1; then
-            missing+=("$pkg")
-        fi
+        rpm -q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
     done
-
-    if ((${#missing[@]} > 0)); then
+    if ((${#missing[@]})); then
         echo "[*] Installing Fedora dependencies: ${missing[*]}"
         sudo -v
         sudo dnf -y install "${missing[@]}"
     else
         echo "[*] Fedora dependencies are already installed."
     fi
-
-    # libirecovery installs udev rules. Reload them after installation so a
-    # device entering DFU is recognized without requiring a reboot.
     sudo udevadm control --reload-rules >/dev/null 2>&1 || true
     sudo udevadm trigger >/dev/null 2>&1 || true
 }
 
 install_fedora_dependencies
 
-# Prefer the repository-provided tool when present, otherwise use Fedora's
-# packaged libirecovery utility.
 if [[ -x "$BIN_DIR/irecovery" ]]; then
     IRECOVERY="$BIN_DIR/irecovery"
 elif command -v irecovery >/dev/null 2>&1; then
     IRECOVERY="$(command -v irecovery)"
 else
-    echo "[!] irecovery is unavailable even after installing libirecovery-utils."
-    exit 1
+    echo "[!] irecovery is unavailable even after installing libirecovery-utils."; exit 1
 fi
 
-# gaster is not a Fedora package. Keep the binary local to the project and
-# fetch the upstream Linux build automatically when it is missing.
 ensure_gaster() {
-    if [[ -x "$BIN_DIR/gaster" ]]; then
-        GASTER="$BIN_DIR/gaster"
-        return 0
-    fi
-
-    if [[ "$(uname -m)" != "x86_64" ]]; then
-        echo "[!] No automatic gaster binary is configured for $(uname -m)."
-        echo "[!] Put a compatible gaster binary at $BIN_DIR/gaster."
-        exit 1
-    fi
-
+    if [[ -x "$BIN_DIR/gaster" ]]; then GASTER="$BIN_DIR/gaster"; return; fi
+    [[ "$(uname -m)" == "x86_64" ]] || { echo "[!] Automatic gaster install supports x86_64 only."; exit 1; }
     mkdir -p "$BIN_DIR"
     local archive="$SCRIPT_DIR/.gaster-linux-x86_64.zip"
     echo "[*] gaster is missing; downloading upstream Linux x86_64 build..."
-    curl -fL --retry 3 --retry-all-errors \
-        "https://nightly.link/verygenericname/gaster/workflows/makefile/main/gaster-Linux-x86_64.zip" \
-        -o "$archive"
+    curl -fL --retry 3 --retry-all-errors "https://nightly.link/verygenericname/gaster/workflows/makefile/main/gaster-Linux-x86_64.zip" -o "$archive"
+    rm -rf "$BIN_DIR/.gaster-extract"
     unzip -o "$archive" -d "$BIN_DIR/.gaster-extract" >/dev/null
-    if [[ -f "$BIN_DIR/.gaster-extract/gaster" ]]; then
-        mv "$BIN_DIR/.gaster-extract/gaster" "$BIN_DIR/gaster"
-    elif [[ -f "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" ]]; then
-        mv "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" "$BIN_DIR/gaster"
-    else
-        echo "[!] Could not locate gaster in the downloaded archive."
-        rm -rf "$BIN_DIR/.gaster-extract" "$archive"
-        exit 1
-    fi
-    rm -rf "$BIN_DIR/.gaster-extract" "$archive"
-    chmod 0755 "$BIN_DIR/gaster"
-    GASTER="$BIN_DIR/gaster"
+    if [[ -f "$BIN_DIR/.gaster-extract/gaster" ]]; then mv "$BIN_DIR/.gaster-extract/gaster" "$BIN_DIR/gaster"; elif [[ -f "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" ]]; then mv "$BIN_DIR/.gaster-extract/gaster-Linux-x86_64" "$BIN_DIR/gaster"; else echo "[!] gaster was not found in the archive."; exit 1; fi
+    rm -rf "$BIN_DIR/.gaster-extract" "$archive"; chmod 0755 "$BIN_DIR/gaster"; GASTER="$BIN_DIR/gaster"
 }
-
 ensure_gaster
 
 ramdisk_ready() {
     local f
-    for f in iBSS.img4 iBEC.img4 logo.img4 ramdisk.img4 devicetree.img4 kernelcache.img4 version.txt; do
-        [[ -s "$RAMDISK_DIR/$f" ]] || return 1
-    done
-    return 0
+    for f in iBSS.img4 iBEC.img4 logo.img4 ramdisk.img4 devicetree.img4 kernelcache.img4 version.txt; do [[ -s "$RAMDISK_DIR/$f" ]] || return 1; done
 }
 
 get_device_info() {
@@ -144,258 +70,163 @@ get_device_info() {
     CPID="$(awk -F': ' '$1=="CPID"{print $2; exit}' <<<"$info")"
     MODEL="$(awk -F': ' '$1=="MODEL"{print $2; exit}' <<<"$info")"
     PRODUCT="$(awk -F': ' '$1=="PRODUCT"{print $2; exit}' <<<"$info")"
-    [[ -n "$CPID" && -n "$MODEL" && -n "$PRODUCT" ]] || {
-        echo "[!] Could not read CPID/MODEL/PRODUCT from irecovery."
-        echo "[!] Put the device in DFU mode and try again."
-        echo "[!] Try: $IRECOVERY -q"
-        exit 1
-    }
+    ECID="$(awk -F': ' '$1=="ECID"{print $2; exit}' <<<"$info")"
+    [[ -n "$CPID" && -n "$MODEL" && -n "$PRODUCT" ]] || { echo "[!] Could not read CPID/MODEL/PRODUCT from irecovery."; echo "[!] Put the device in DFU mode and try: $IRECOVERY -q"; exit 1; }
+    [[ -n "$ECID" ]] || { echo "[!] ECID was not reported by irecovery; automatic SHSH lookup is unavailable."; exit 1; }
 }
 
 require_gh() {
-    command -v gh >/dev/null 2>&1 || {
-        echo "[!] GitHub CLI (gh) is required and should have been installed automatically."
-        exit 1
-    }
-
+    command -v gh >/dev/null 2>&1 || { echo "[!] GitHub CLI is required."; exit 1; }
     if ! gh auth status >/dev/null 2>&1; then
         echo "[*] GitHub CLI is not authenticated."
-        echo "[*] Starting GitHub device/browser login..."
         gh auth login --web --git-protocol https
     fi
-
-    gh auth status >/dev/null 2>&1 || {
-        echo "[!] GitHub authentication failed."
-        exit 1
-    }
+    gh auth status >/dev/null 2>&1 || { echo "[!] GitHub authentication failed."; exit 1; }
 }
 
-find_shsh() {
+find_local_shsh() {
     local candidates=(
-        "$SCRIPT_DIR/other/shsh/${CPID}.shsh"
-        "$SCRIPT_DIR/other/shsh/${CPID}.shsh2"
-        "$SCRIPT_DIR/shsh/${CPID}.shsh"
-        "$SCRIPT_DIR/shsh/${CPID}.shsh2"
-        "$HOME/.cache/sshlinux/${CPID}.shsh"
-        "$HOME/.cache/sshlinux/${CPID}.shsh2"
+        "$SCRIPT_DIR/other/shsh/${CPID}.shsh" "$SCRIPT_DIR/other/shsh/${CPID}.shsh2"
+        "$SCRIPT_DIR/shsh/${CPID}.shsh" "$SCRIPT_DIR/shsh/${CPID}.shsh2"
+        "$HOME/.cache/sshlinux/${CPID}.shsh" "$HOME/.cache/sshlinux/${CPID}.shsh2"
     )
-
-    for path in "${candidates[@]}"; do
-        if [[ -s "$path" ]]; then
-            SHSH_PATH="$path"
-            return 0
-        fi
-    done
-
-    echo "[!] No SHSH/SHSH2 ticket was found automatically for $CPID."
-    echo "[!] A personalized IM4M is required by the SSHRD build."
-    echo "[*] Expected locations include:"
-    printf '    %s\n' "${candidates[@]}"
-    echo
-    read -r -e -p "Path to matching SHSH/SHSH2 (or Ctrl+C): " SHSH_PATH
-    [[ -s "$SHSH_PATH" ]] || {
-        echo "[!] SHSH file not found or empty: $SHSH_PATH"
-        exit 1
-    }
+    local path
+    for path in "${candidates[@]}"; do if [[ -s "$path" ]]; then SHSH_PATH="$path"; return 0; fi; done
+    return 1
 }
 
-choose_repo() {
-    local requested="${2:-}"
-    if [[ -n "$requested" ]]; then
-        REPO="$requested"
-    else
-        read -r -e -p "GitHub repository [$DEFAULT_REPO]: " REPO
-        REPO="${REPO:-$DEFAULT_REPO}"
-    fi
-
-    gh repo view "$REPO" >/dev/null 2>&1 || {
-        echo "[!] Cannot access repository: $REPO"
-        exit 1
-    }
-}
-
-run_build() {
-    local requested_repo="${2:-}"
-    local ios_version="${IOS_VERSION:-}"
-    local request_id="sshlinux-$(date +%Y%m%d-%H%M%S)-$RANDOM"
-    local shsh_b64
-    local run_id=""
-    local download_dir="$SCRIPT_DIR/.sshlinux-download-$request_id"
-
+ensure_tsschecker() {
+    [[ "$(uname -m)" == "x86_64" ]] || { echo "[!] Automatic tsschecker install currently supports x86_64 only."; return 1; }
+    if [[ -x "$TSSCHECKER_DIR/tsschecker" ]]; then TSSCHECKER="$TSSCHECKER_DIR/tsschecker"; return 0; fi
     require_gh
-    get_device_info
-    choose_repo build "$requested_repo"
-
-    echo "[*] Device: $PRODUCT"
-    echo "[*] Model:  $MODEL"
-    echo "[*] CPID:   $CPID"
-
-    if [[ -z "$ios_version" ]]; then
-        read -r -e -p "iOS version to build (for example 15.6.1): " ios_version
-    fi
-    [[ -n "$ios_version" ]] || { echo "[!] iOS version is required."; exit 1; }
-
-    find_shsh
-    shsh_b64="$(base64 -w0 "$SHSH_PATH" 2>/dev/null || base64 "$SHSH_PATH" | tr -d '\n')"
-
-    echo "[*] Dispatching macOS GitHub Actions workflow..."
-    gh workflow run "$WORKFLOW_FILE" \
-        --repo "$REPO" \
-        --ref "$BRANCH" \
-        -f request_id="$request_id" \
-        -f ios_version="$ios_version" \
-        -f product="$PRODUCT" \
-        -f model="$MODEL" \
-        -f cpid="$CPID" \
-        -f shsh_base64="$shsh_b64"
-
-    echo "[*] Waiting for workflow run..."
-    for _ in {1..30}; do
-        run_id="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" --limit 20 \
-            --json databaseId,displayTitle,createdAt \
-            --jq 'map(select(.displayTitle | contains("'"$request_id"'"))) | sort_by(.createdAt) | last | .databaseId' 2>/dev/null || true)"
-        if [[ "$run_id" =~ ^[0-9]+$ ]]; then
-            break
+    mkdir -p "$TSSCHECKER_DIR"
+    local run_id artifact_tmp
+    echo "[*] Downloading current Linux x86_64 tsschecker build..."
+    while read -r run_id; do
+        [[ -n "$run_id" ]] || continue
+        artifact_tmp="$TSSCHECKER_DIR/download-$run_id"
+        rm -rf "$artifact_tmp"; mkdir -p "$artifact_tmp"
+        if gh run download "$run_id" --repo 1Conan/tsschecker -n tsschecker_linux_x86_64 -D "$artifact_tmp" >/dev/null 2>&1; then
+            local candidate
+            candidate="$(find "$artifact_tmp" -type f -name 'tsschecker*' -perm -u+x -print -quit)"
+            [[ -n "$candidate" ]] || candidate="$(find "$artifact_tmp" -type f -name 'tsschecker*' -print -quit)"
+            if [[ -n "$candidate" ]]; then cp "$candidate" "$TSSCHECKER_DIR/tsschecker"; chmod 0755 "$TSSCHECKER_DIR/tsschecker"; rm -rf "$artifact_tmp"; TSSCHECKER="$TSSCHECKER_DIR/tsschecker"; return 0; fi
         fi
-        sleep 2
-    done
-
-    [[ "$run_id" =~ ^[0-9]+$ ]] || {
-        echo "[!] Could not locate the dispatched workflow run."
-        exit 1
-    }
-
-    echo "[*] Workflow run: $run_id"
-    echo "[*] Streaming macOS build logs:"
-    echo
-    gh run watch "$run_id" --repo "$REPO" --interval 3 --log
-
-    local conclusion
-    conclusion="$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')"
-    [[ "$conclusion" == "success" ]] || {
-        echo "[!] Workflow failed: $conclusion"
-        exit 1
-    }
-
-    echo "[*] Downloading ramdisk artifact..."
-    rm -rf "$download_dir"
-    mkdir -p "$download_dir"
-    gh run download "$run_id" --repo "$REPO" -n "sshramdisk-${PRODUCT}" -D "$download_dir"
-
-    local archive
-    archive="$(find "$download_dir" -maxdepth 2 -type f -name 'sshramdisk-*.tar.gz' -print -quit)"
-    [[ -n "$archive" ]] || {
-        echo "[!] Ramdisk artifact was not found in the workflow output."
-        exit 1
-    }
-
-    rm -rf "$RAMDISK_DIR"
-    mkdir -p "$RAMDISK_DIR"
-    tar -xzf "$archive" -C "$SCRIPT_DIR"
-    rm -rf "$download_dir"
-
-    ramdisk_ready || {
-        echo "[!] Downloaded ramdisk is incomplete."
-        exit 1
-    }
-
-    echo "[*] Ramdisk downloaded to: $RAMDISK_DIR"
-    ls -lh "$RAMDISK_DIR"
-    echo "[*] Build complete. Run: ./sshlinux.sh boot"
+        rm -rf "$artifact_tmp"
+    done < <(gh run list --repo 1Conan/tsschecker --limit 20 --json databaseId,status,conclusion --jq '.[] | select(.status=="completed" and .conclusion=="success") | .databaseId')
+    return 1
 }
 
-ensure_ramdisk() {
-    if ramdisk_ready; then
-        echo "[*] Using local SSH ramdisk: $RAMDISK_DIR"
-        return 0
+hex_to_dec() {
+    python3 - "$1" <<'PY'
+import sys
+s=sys.argv[1].strip()
+try:
+    print(int(s, 0))
+except ValueError:
+    print(int(s, 16))
+PY
+}
+
+fetch_shshhost_blob() {
+    local ios_version="$1" ecid_value api_json url
+    ecid_value="$(hex_to_dec "$ECID")"
+    echo "[*] Checking shsh.host for a previously saved blob for ECID $ecid_value..."
+    api_json="$(curl -fsSL --retry 3 --retry-all-errors "https://api.arx8x.net/shsh3/list.php?ecid=$ecid_value" 2>/dev/null || true)"
+    [[ -n "$api_json" ]] || return 1
+    url="$(jq -r --arg dev "$PRODUCT" --arg board "$MODEL" --arg ver "$ios_version" '\n        .. | objects | select(.url? and .version? and .device? and .boardconfig?)\n        | select(.device==$dev and (.boardconfig|ascii_downcase)==($board|ascii_downcase) and .version==$ver)\n        | .url' <<<"$api_json" 2>/dev/null | head -n1)"
+    [[ -n "$url" && "$url" != "null" ]] || return 1
+    mkdir -p "$HOME/.cache/sshlinux"
+    SHSH_PATH="$HOME/.cache/sshlinux/${CPID}.shsh2"
+    echo "[*] Downloading saved SHSH2 from shsh.host..."
+    curl -fL --retry 3 --retry-all-errors "$url" -o "$SHSH_PATH"
+    [[ -s "$SHSH_PATH" ]]
+}
+
+request_signed_blob() {
+    local ios_version="$1" out_dir
+    ensure_tsschecker || return 1
+    out_dir="$HOME/.cache/sshlinux/tss-$PRODUCT-$ios_version"
+    rm -rf "$out_dir"; mkdir -p "$out_dir"
+    echo "[*] Asking Apple's TSS server whether $PRODUCT $ios_version is still signed..."
+    "$TSSCHECKER" --device "$PRODUCT" --boardconfig "$MODEL" --ecid "$ECID" --ios "$ios_version" --no-baseband --save --save-path "$out_dir" --nocache || true
+    SHSH_PATH="$(find "$out_dir" -type f \( -name '*.shsh' -o -name '*.shsh2' \) -size +0c -print -quit)"
+    [[ -n "$SHSH_PATH" ]]
+}
+
+find_or_create_shsh() {
+    local ios_version="$1"
+    if find_local_shsh; then
+        echo "[*] Using local SHSH: $SHSH_PATH"; return 0
     fi
-
-    get_device_info
-    local repo="${SSHLINUX_REPO:-$DEFAULT_REPO}"
-    local artifact_run
-    require_gh
-
-    echo "[*] No local ramdisk found for $PRODUCT."
-    echo "[*] Looking for the latest matching artifact in $repo..."
-    artifact_run="$(gh run list --repo "$repo" --workflow "$WORKFLOW_FILE" --limit 20 --json databaseId,status,conclusion,createdAt,displayTitle \
-        --jq 'map(select(.displayTitle | contains("SSHLinux ramdisk")) | select(.status == "completed" and .conclusion == "success")) | sort_by(.createdAt) | reverse | map(.databaseId) | .[0]' 2>/dev/null || true)"
-
-    if [[ "$artifact_run" =~ ^[0-9]+$ ]]; then
-        local tmp="$SCRIPT_DIR/.sshlinux-auto-$PRODUCT"
-        rm -rf "$tmp"
-        mkdir -p "$tmp"
-        if gh run download "$artifact_run" --repo "$repo" -n "sshramdisk-${PRODUCT}" -D "$tmp" >/dev/null 2>&1; then
-            local archive
-            archive="$(find "$tmp" -maxdepth 2 -type f -name 'sshramdisk-*.tar.gz' -print -quit)"
-            if [[ -n "$archive" ]]; then
-                rm -rf "$RAMDISK_DIR"
-                mkdir -p "$RAMDISK_DIR"
-                tar -xzf "$archive" -C "$SCRIPT_DIR"
-                rm -rf "$tmp"
-                ramdisk_ready && return 0
-            fi
-        fi
-        rm -rf "$tmp"
+    if fetch_shshhost_blob "$ios_version"; then
+        echo "[*] Found a previously saved SHSH2 on shsh.host: $SHSH_PATH"; return 0
     fi
-
-    echo "[!] No usable downloaded ramdisk was found."
-    echo "[!] Run: ./sshlinux.sh build"
+    if request_signed_blob "$ios_version"; then
+        echo "[*] Apple returned a fresh signing ticket: $SHSH_PATH"; return 0
+    fi
+    echo "[!] No usable SHSH blob was found for $PRODUCT $ios_version."
+    echo "[!] The target firmware is not currently signed, and no previously saved blob was found for this ECID."
+    echo "[!] A new personalized SHSH cannot be created for an unsigned firmware; you need a saved blob." 
+    echo "[*] You can place it at: $SCRIPT_DIR/other/shsh/${CPID}.shsh2"
     exit 1
 }
 
-need_file() {
-    [[ -s "$RAMDISK_DIR/$1" ]] || {
-        echo "[!] Missing ramdisk component: $RAMDISK_DIR/$1"
-        exit 1
-    }
+choose_repo() {
+    if [[ -n "${2:-}" ]]; then REPO="$2"; else read -r -e -p "GitHub repository [$DEFAULT_REPO]: " REPO; REPO="${REPO:-$DEFAULT_REPO}"; fi
+    gh repo view "$REPO" >/dev/null 2>&1 || { echo "[!] Cannot access repository: $REPO"; exit 1; }
+}
+
+run_build() {
+    local requested_repo="${1:-}" ios_version="${IOS_VERSION:-}" request_id run_id="" shsh_b64 download_dir archive
+    require_gh; get_device_info; choose_repo build "$requested_repo"
+    echo "[*] Device: $PRODUCT"; echo "[*] Model:  $MODEL"; echo "[*] CPID:   $CPID"; echo "[*] ECID:   $ECID"
+    [[ -n "$ios_version" ]] || read -r -e -p "iOS version to build (for example 15.6.1): " ios_version
+    [[ -n "$ios_version" ]] || { echo "[!] iOS version is required."; exit 1; }
+    find_or_create_shsh "$ios_version"
+    shsh_b64="$(base64 -w0 "$SHSH_PATH" 2>/dev/null || base64 "$SHSH_PATH" | tr -d '\n')"
+    request_id="sshlinux-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    echo "[*] Dispatching macOS GitHub Actions workflow..."
+    gh workflow run "$WORKFLOW_FILE" --repo "$REPO" --ref "$BRANCH" -f request_id="$request_id" -f ios_version="$ios_version" -f product="$PRODUCT" -f model="$MODEL" -f cpid="$CPID" -f shsh_base64="$shsh_b64"
+    echo "[*] Waiting for workflow run..."
+    for _ in {1..30}; do
+        run_id="$(gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" --limit 20 --json databaseId,displayTitle,createdAt --jq 'map(select(.displayTitle | contains("'"$request_id"'"))) | sort_by(.createdAt) | last | .databaseId' 2>/dev/null || true)"
+        [[ "$run_id" =~ ^[0-9]+$ ]] && break
+        sleep 2
+    done
+    [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "[!] Could not locate the dispatched workflow run."; exit 1; }
+    echo "[*] Workflow run: $run_id"; echo "[*] Streaming macOS build logs:"; echo
+    gh run watch "$run_id" --repo "$REPO" --interval 3 --log
+    [[ "$(gh run view "$run_id" --repo "$REPO" --json conclusion --jq '.conclusion')" == "success" ]] || { echo "[!] Workflow failed."; exit 1; }
+    echo "[*] Downloading ramdisk artifact..."
+    download_dir="$SCRIPT_DIR/.sshlinux-download-$request_id"; rm -rf "$download_dir"; mkdir -p "$download_dir"
+    gh run download "$run_id" --repo "$REPO" -n "sshramdisk-${PRODUCT}" -D "$download_dir"
+    archive="$(find "$download_dir" -type f -name 'sshramdisk-*.tar.gz' -print -quit)"
+    [[ -n "$archive" ]] || { echo "[!] Ramdisk artifact was not found."; exit 1; }
+    rm -rf "$RAMDISK_DIR"; mkdir -p "$RAMDISK_DIR"; tar -xzf "$archive" -C "$SCRIPT_DIR"; rm -rf "$download_dir"
+    ramdisk_ready || { echo "[!] Downloaded ramdisk is incomplete."; exit 1; }
+    echo "[*] Ramdisk downloaded to: $RAMDISK_DIR"; ls -lh "$RAMDISK_DIR"; echo "[*] Build complete. Run: ./sshlinux.sh boot"
+}
+
+ensure_ramdisk() {
+    ramdisk_ready && { echo "[*] Using local SSH ramdisk: $RAMDISK_DIR"; return 0; }
+    echo "[!] No local ramdisk found. Run: ./sshlinux.sh build"; exit 1
 }
 
 boot_ramdisk() {
     ensure_ramdisk
-
-    for f in iBSS.img4 iBEC.img4 logo.img4 ramdisk.img4 devicetree.img4 kernelcache.img4; do
-        need_file "$f"
-    done
-
+    local f
+    for f in iBSS.img4 iBEC.img4 logo.img4 ramdisk.img4 devicetree.img4 kernelcache.img4; do [[ -s "$RAMDISK_DIR/$f" ]] || { echo "[!] Missing $RAMDISK_DIR/$f"; exit 1; }; done
     get_device_info
-    echo "[*] Device model: $MODEL"
-    echo "[*] Device product: $PRODUCT"
-    echo "[*] Ramdisk iOS version: $(cat "$RAMDISK_DIR/version.txt")"
-
-    echo "[*] Entering patched DFU..."
-    "$GASTER" pwn >/dev/null
-    "$GASTER" reset >/dev/null
-
-    echo "[*] Sending iBSS"
-    "$IRECOVERY" -f "$RAMDISK_DIR/iBSS.img4"
-    sleep 2
-
-    echo "[*] Sending iBEC"
-    "$IRECOVERY" -f "$RAMDISK_DIR/iBEC.img4"
-    sleep 2
-
-    echo "[*] Sending boot logo"
-    "$IRECOVERY" -f "$RAMDISK_DIR/logo.img4"
-    "$IRECOVERY" -c "setpicture 0x1"
-
-    echo "[*] Sending ramdisk"
-    "$IRECOVERY" -f "$RAMDISK_DIR/ramdisk.img4"
-    "$IRECOVERY" -c ramdisk
-
-    echo "[*] Sending DeviceTree"
-    "$IRECOVERY" -f "$RAMDISK_DIR/devicetree.img4"
-    "$IRECOVERY" -c devicetree
-
-    if [[ -s "$RAMDISK_DIR/trustcache.img4" ]]; then
-        echo "[*] Sending trustcache"
-        "$IRECOVERY" -f "$RAMDISK_DIR/trustcache.img4"
-        "$IRECOVERY" -c firmware
-    fi
-
-    echo "[*] Sending kernelcache"
-    "$IRECOVERY" -f "$RAMDISK_DIR/kernelcache.img4"
-    "$IRECOVERY" -c bootx
-
+    echo "[*] Device: $PRODUCT ($MODEL)"; echo "[*] Ramdisk iOS version: $(cat "$RAMDISK_DIR/version.txt")"
+    echo "[*] Entering patched DFU..."; "$GASTER" pwn >/dev/null; "$GASTER" reset >/dev/null
+    "$IRECOVERY" -f "$RAMDISK_DIR/iBSS.img4"; sleep 2
+    "$IRECOVERY" -f "$RAMDISK_DIR/iBEC.img4"; sleep 2
+    "$IRECOVERY" -f "$RAMDISK_DIR/logo.img4"; "$IRECOVERY" -c "setpicture 0x1"
+    "$IRECOVERY" -f "$RAMDISK_DIR/ramdisk.img4"; "$IRECOVERY" -c ramdisk
+    "$IRECOVERY" -f "$RAMDISK_DIR/devicetree.img4"; "$IRECOVERY" -c devicetree
+    if [[ -s "$RAMDISK_DIR/trustcache.img4" ]]; then "$IRECOVERY" -f "$RAMDISK_DIR/trustcache.img4"; "$IRECOVERY" -c firmware; fi
+    "$IRECOVERY" -f "$RAMDISK_DIR/kernelcache.img4"; "$IRECOVERY" -c bootx
     echo "[*] Boot command sent."
 }
 
@@ -405,38 +236,21 @@ Usage:
   ./sshlinux.sh build [owner/repo]
   ./sshlinux.sh boot
 
-build:
-  Installs/updates Fedora dependencies automatically, reads PRODUCT/MODEL/CPID
-  from irecovery, authenticates to GitHub with gh, dispatches the macOS builder,
-  streams the workflow logs to this terminal, then downloads the generated ramdisk.
+build: Fedora 44 dependency setup, GitHub login, automatic SHSH resolution,
+       macOS GitHub Actions build, live logs, and automatic ramdisk download.
 
-boot:
-  Uses ./sshramdisk, or downloads the latest successful matching artifact
-  from GitHub before booting it.
+The SHSH resolver tries, in order:
+  1. local .shsh/.shsh2
+  2. a previously saved matching blob on shsh.host
+  3. Apple's TSS server via tsschecker when the target is currently signed
 
-Fedora 44 dependencies installed automatically:
-  gh git curl jq libusb1 libusbmuxd libusbmuxd-utils usbmuxd
-  libimobiledevice libimobiledevice-utils libirecovery libirecovery-utils
-  usbutils ca-certificates tar gzip unzip xz file python3 python3-pip
-  openssl procps-ng
-
-Examples:
-  ./sshlinux.sh build
-  ./sshlinux.sh build FogboundSloth25/surrealra1nsshlinux
-  IOS_VERSION=15.6.1 ./sshlinux.sh build
-  SSHLINUX_REPO=owner/repo ./sshlinux.sh boot
+For an unsigned firmware with no previously saved blob, creation of a new
+personalized SHSH is not possible; the script will stop instead of pretending.
 EOF
 }
 
 case "${1:-}" in
-    build)
-        run_build "${2:-}"
-        ;;
-    boot)
-        boot_ramdisk
-        ;;
-    *)
-        usage
-        exit 2
-        ;;
+    build) run_build "${2:-}" ;;
+    boot) boot_ramdisk ;;
+    *) usage; exit 2 ;;
 esac
