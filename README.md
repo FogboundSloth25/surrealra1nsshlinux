@@ -18,6 +18,8 @@ sshramdisk/
 └── version.txt
 ```
 
+The macOS builder compiles and installs the **Cryptiiiic/iBoot64Patcher** fork into the temporary SSHRD tool tree before running the ramdisk build. The original archived iBoot64Patcher has an open iOS 17 patching issue, while the Cryptiiiic fork is the maintained fork used by current checkm8 tooling. 
+
 ### Build from Fedora/Linux
 
 Use one command:
@@ -72,3 +74,5 @@ libimobiledevice team, tihmstar, LukeeGD/LukeZGD, xerub, plooshi, etc.
 Mineek - iPhone X restored patcher, openra1n, and seprmvr64
 
 Nathan (verygenericname) - SSHRD_Script
+
+Cryptic/Cryptiiiic - iBoot64Patcher fork
