@@ -9,6 +9,12 @@ RAMDISK_DIR="$ROOT_DIR/sshramdisk"
 FEDORA_RELEASE="${FEDORA_RELEASE:-44}"
 ARCH="${ARCH:-aarch64}"
 
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
 rm -rf "$OUT_DIR"
 mkdir -p "$ROOTFS" "$RAMDISK_DIR"
 
@@ -21,7 +27,7 @@ done
 
 echo "[*] Building Fedora ${FEDORA_RELEASE} ${ARCH} SSHLinux userspace"
 
-sudo dnf -y \
+$SUDO dnf -y \
     --releasever="$FEDORA_RELEASE" \
     --forcearch="$ARCH" \
     --installroot="$ROOTFS" \
