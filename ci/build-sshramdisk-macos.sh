@@ -10,6 +10,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$ROOT_DIR/ci/work-sshrd"
 UPSTREAM_DIR="$WORK_DIR/SSHRD_Script"
+PATCHER_DIR="$WORK_DIR/Cryptiiiic-iBoot64Patcher"
 SHSH_DIR="$UPSTREAM_DIR/other/shsh"
 OUTPUT_DIR="$ROOT_DIR/sshramdisk"
 
@@ -21,10 +22,60 @@ test -s "$LOCAL_SHSH" || {
     exit 1
 }
 
+build_cryptiiiic_ibootpatcher() {
+    local arch dep_url dep_archive dep_root
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|arm64) ;;
+        *) echo "[!] Unsupported macOS runner architecture: $arch"; exit 1 ;;
+    esac
+
+    echo "[*] Building Cryptiiiic/iBoot64Patcher for macOS $arch"
+    git clone --depth=1 https://github.com/Cryptiiiic/iBoot64Patcher.git "$PATCHER_DIR"
+    cd "$PATCHER_DIR"
+
+    dep_url="https://cdn.cryptiiiic.com/deps/static/macOS/${arch}/macOS_${arch}_Release_Latest.tar.zst"
+    dep_archive="$WORK_DIR/macOS_${arch}_Release_Latest.tar.zst"
+    dep_root="$PATCHER_DIR/dep_root"
+
+    echo "[*] Downloading Cryptiiiic static macOS dependencies"
+    curl -fL --retry 3 --retry-all-errors "$dep_url" -o "$dep_archive"
+
+    if ! command -v unzstd >/dev/null 2>&1; then
+        brew install zstd >/dev/null
+    fi
+
+    mkdir -p "$dep_root"
+    tar --use-compress-program=unzstd -xf "$dep_archive" -C "$dep_root"
+    test -d "$dep_root/include" || { echo "[!] Missing dep_root/include after extraction"; exit 1; }
+    test -d "$dep_root/lib" || { echo "[!] Missing dep_root/lib after extraction"; exit 1; }
+
+    cmake -S . -B cmake-build-release \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_MAKE_PROGRAM="$(command -v make)" \
+        -DCMAKE_C_COMPILER="$(xcrun --find clang)" \
+        -DCMAKE_CXX_COMPILER="$(xcrun --find clang++)" \
+        -DCMAKE_MESSAGE_LOG_LEVEL=WARNING \
+        -DARCH="$arch" \
+        -DNO_PKGCFG=1
+
+    cmake --build cmake-build-release --parallel "$(sysctl -n hw.ncpu)"
+    test -x "$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher" || {
+        echo "[!] Cryptiiiic iBoot64Patcher build did not produce a binary"
+        exit 1
+    }
+
+    cp "$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher" "$UPSTREAM_DIR/Darwin/iBoot64Patcher"
+    chmod 0755 "$UPSTREAM_DIR/Darwin/iBoot64Patcher"
+    echo "[*] Using freshly built Cryptiiiic iBoot64Patcher"
+}
+
 echo "[*] Cloning upstream SSHRD_Script"
 git clone --depth=1 https://github.com/verygenericname/SSHRD_Script.git "$UPSTREAM_DIR"
 cd "$UPSTREAM_DIR"
 git submodule update --init --recursive
+
+build_cryptiiiic_ibootpatcher
 
 mkdir -p "$SHSH_DIR"
 cp "$LOCAL_SHSH" "$SHSH_DIR/${DEVICE_CPID}.shsh"
@@ -72,7 +123,6 @@ if linux_old not in s:
 s = s.replace(darwin_old, darwin_new, 1)
 s = s.replace(linux_old, linux_new, 1)
 
-# Replace device detection with values supplied by the Linux launcher.
 info_old = '''check=$("$oscheck"/irecovery -q | grep CPID | sed 's/CPID: //')
 replace=$("$oscheck"/irecovery -q | grep MODEL | sed 's/MODEL: //')
 deviceid=$("$oscheck"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
@@ -91,17 +141,14 @@ if info_old not in s:
     raise SystemExit("Could not find upstream device-info block")
 s = s.replace(info_old, info_new, 1)
 
-# Remove ONLY the build-time gaster calls. Do not touch the reset/boot pwn
-# commands earlier in the script. The exact block is unique in the upstream
-# build path and is followed immediately by img4tool IM4M creation.
 build_block = '''\n\n"$oscheck"/gaster pwn > /dev/null
 # A10X / T2 workaround
 "$oscheck"/gaster decrypt_kbag 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 > /dev/null || true
 "$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
 '''
-build_replacement = '''\n\n# Building in CI has no attached DFU device. For modern firmware the later
-# darwin_major >= 24 path decrypts iBSS/iBEC with img4 directly, so these
-# device-side gaster calls are intentionally omitted here.
+build_replacement = '''\n\n# The CI runner has no attached DFU device. For modern firmware the later
+# darwin_major >= 24 path uses img4 directly for iBSS/iBEC, so gaster is not
+# needed during ramdisk construction.
 "$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
 '''
 if build_block not in s:
@@ -139,10 +186,10 @@ model=$DEVICE_MODEL
 cpid=$DEVICE_CPID
 ios=$IOS_VERSION
 source=verygenericname/SSHRD_Script
+iboot_patcher=Cryptiiiic/iBoot64Patcher
 platform=macOS
 EOF
 
-# Remove ticket/build material before the job finishes.
 rm -rf "$UPSTREAM_DIR/other/shsh/"*
 rm -rf "$WORK_DIR"
 
