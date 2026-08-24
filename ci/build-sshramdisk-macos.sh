@@ -36,7 +36,10 @@ from pathlib import Path
 p = Path("sshrd.sh")
 s = p.read_text()
 
-old = '''elif [ "$oscheck" = 'Darwin' ]; then
+# Preserve the upstream if/elif chain. We only replace the DFU wait commands
+# inside the existing Darwin/Linux branches, so the surrounding shell syntax
+# and the final outer `{ ... } | tee ...` remain intact.
+darwin_old = '''elif [ "$oscheck" = 'Darwin' ]; then
     if ! (system_profiler SPUSBDataType SPUSBHostDataType 2> /dev/null | grep ' Apple Mobile Device (DFU Mode)' >> /dev/null); then
         echo "[*] Waiting for device in DFU mode"
     fi
@@ -44,7 +47,11 @@ old = '''elif [ "$oscheck" = 'Darwin' ]; then
     while ! (system_profiler SPUSBDataType SPUSBHostDataType 2> /dev/null | grep ' Apple Mobile Device (DFU Mode)' >> /dev/null); do
         sleep 1
     done
-else
+'''
+darwin_new = '''elif [ "$oscheck" = 'Darwin' ]; then
+    echo "[*] Building without a physical DFU device"
+'''
+linux_old = '''else
     if ! (lsusb 2> /dev/null | grep ' Apple, Inc. Mobile Device (DFU Mode)' >> /dev/null); then
         echo "[*] Waiting for device in DFU mode"
     fi
@@ -53,32 +60,48 @@ else
         sleep 1
     done
 fi
+'''
+linux_new = '''else
+    echo "[*] Building without a physical DFU device"
+fi
+'''
 
-echo "[*] Getting device info and pwning... this may take a second"
-check=$("$oscheck"/irecovery -q | grep CPID | sed 's/CPID: //')
+if darwin_old not in s:
+    raise SystemExit("Could not find upstream Darwin DFU block")
+if linux_old not in s:
+    raise SystemExit("Could not find upstream Linux DFU block")
+s = s.replace(darwin_old, darwin_new, 1)
+s = s.replace(linux_old, linux_new, 1)
+
+# Replace only the device-info assignments. Keep the rest of upstream build
+# logic unchanged, including IPSW discovery and ramdisk assembly.
+info_old = '''check=$("$oscheck"/irecovery -q | grep CPID | sed 's/CPID: //')
 replace=$("$oscheck"/irecovery -q | grep MODEL | sed 's/MODEL: //')
 deviceid=$("$oscheck"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
 ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$1'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
 '''
-
-new = '''echo "[*] Building without a physical DFU device"
-check="$DEVICE_CPID"
+info_new = '''check="$DEVICE_CPID"
 replace="$DEVICE_MODEL"
 deviceid="$DEVICE_ID"
 ipswurl=$(curl -fsSL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$IOS_VERSION'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
-
 if [ -z "$ipswurl" ] || [ "$ipswurl" = "null" ]; then
     echo "[!] No IPSW found for $deviceid $IOS_VERSION"
     exit 1
 fi
 '''
+if info_old not in s:
+    raise SystemExit("Could not find upstream device-info block")
+s = s.replace(info_old, info_new, 1)
 
-if old not in s:
-    raise SystemExit("Could not find upstream device detection block")
-s = s.replace(old, new, 1)
-p.write_text(s)
+# Syntax-check the patched script before the actual build runs.
+Path("sshrd-patched.sh").write_text(s)
 PY
 
+if ! /bin/sh -n sshrd-patched.sh; then
+    echo "[!] Patched SSHRD script failed shell syntax check"
+    exit 2
+fi
+mv sshrd-patched.sh sshrd.sh
 chmod +x sshrd.sh
 ./sshrd.sh "$IOS_VERSION"
 
@@ -105,7 +128,7 @@ source=verygenericname/SSHRD_Script
 platform=macOS
 EOF
 
-# Remove any ticket material before the job finishes.
+# Remove ticket/build material before the job finishes.
 rm -rf "$UPSTREAM_DIR/other/shsh/"*
 rm -rf "$WORK_DIR"
 
