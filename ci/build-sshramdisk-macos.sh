@@ -32,13 +32,13 @@ chmod 600 "$SHSH_DIR/${DEVICE_CPID}.shsh"
 
 python3 - <<'PY'
 from pathlib import Path
+import re
 
 p = Path("sshrd.sh")
 s = p.read_text()
 
-# Preserve the upstream if/elif chain. We only replace the DFU wait commands
-# inside the existing Darwin/Linux branches, so the surrounding shell syntax
-# and the final outer `{ ... } | tee ...` remain intact.
+# Build in CI without a physically attached device, while preserving the
+# upstream if/elif structure and the rest of its build pipeline.
 darwin_old = '''elif [ "$oscheck" = 'Darwin' ]; then
     if ! (system_profiler SPUSBDataType SPUSBHostDataType 2> /dev/null | grep ' Apple Mobile Device (DFU Mode)' >> /dev/null); then
         echo "[*] Waiting for device in DFU mode"
@@ -73,8 +73,7 @@ if linux_old not in s:
 s = s.replace(darwin_old, darwin_new, 1)
 s = s.replace(linux_old, linux_new, 1)
 
-# Replace only the device-info assignments. Keep the rest of upstream build
-# logic unchanged, including IPSW discovery and ramdisk assembly.
+# Replace device detection with values supplied by the Linux launcher.
 info_old = '''check=$("$oscheck"/irecovery -q | grep CPID | sed 's/CPID: //')
 replace=$("$oscheck"/irecovery -q | grep MODEL | sed 's/MODEL: //')
 deviceid=$("$oscheck"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
@@ -93,30 +92,20 @@ if info_old not in s:
     raise SystemExit("Could not find upstream device-info block")
 s = s.replace(info_old, info_new, 1)
 
-# For modern iOS (darwin_major >= 24), upstream already extracts iBSS/iBEC
-# directly with img4 and does not require gaster to decrypt them. Skip the
-# DFU-only gaster calls that otherwise block a device-free CI build.
-gaster_old = '''"$oscheck"/gaster pwn > /dev/null
-# A10X / T2 workaround
-
-"$oscheck"/gaster decrypt_kbag 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 > /dev/null || true
-
-"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
-'''
-gaster_new = '''if [ "$darwin_major" -ge 24 ]; then
-    echo "[*] Modern iOS detected (darwin_major=$darwin_major); skipping DFU-only gaster operations"
-else
-    echo "[!] Device-free build is only supported for modern iOS where SSHRD uses IMG4 extraction without gaster decryption"
-    exit 1
-fi
-
-"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
-'''
-if gaster_old not in s:
+# The upstream build path unconditionally performs gaster pwn/decrypt_kbag
+# before downloading firmware. Those operations require a real DFU device and
+# are not needed for modern firmware where the later darwin_major >= 24 path
+# uses img4 directly for iBSS/iBEC. Remove only those build-time calls; keep
+# gaster intact for the separate boot/reset commands.
+build_gaster_patterns = [
+    re.compile(r'^[ \t]*"\$oscheck"/gaster pwn > /dev/null[ \t]*\n', re.M),
+    re.compile(r'^\s*# A10X / T2 workaround\n\s*"\$oscheck"/gaster decrypt_kbag [^\n]*\n', re.M),
+]
+if not any(p.search(s) for p in build_gaster_patterns):
     raise SystemExit("Could not find upstream build-time gaster block")
-s = s.replace(gaster_old, gaster_new, 1)
+for pattern in build_gaster_patterns:
+    s = pattern.sub('', s, count=1)
 
-# Syntax-check the patched script before the actual build runs.
 Path("sshrd-patched.sh").write_text(s)
 PY
 
@@ -149,8 +138,6 @@ cpid=$DEVICE_CPID
 ios=$IOS_VERSION
 source=verygenericname/SSHRD_Script
 platform=macOS
-device_free=true
-gaster_build_pwn=skipped_for_modern_ios
 EOF
 
 # Remove ticket/build material before the job finishes.
