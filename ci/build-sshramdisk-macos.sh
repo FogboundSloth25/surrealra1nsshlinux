@@ -53,6 +53,30 @@ build_cryptiiiic_ibootpatcher() {
     test -d "$dep_root/include" || { echo "[!] Missing dep_root/include after extraction"; exit 1; }
     test -d "$dep_root/lib" || { echo "[!] Missing dep_root/lib after extraction"; exit 1; }
 
+    # Cryptiiiic/iBoot64Patcher's current main.cpp uses libpatchfinder's
+    # historical private fields directly, while the bundled/current header
+    # exposes the supported public getters. Adapt only those source accesses.
+    PATCHER_MAIN="$PATCHER_DIR/src/main.cpp"
+    python3 - "$PATCHER_MAIN" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+replacements = {
+    "p2._patchSize": "p2.getPatchSize()",
+    "p2._patch": "p2.getPatch()",
+}
+for old, new in replacements.items():
+    s = s.replace(old, new)
+p.write_text(s)
+PY
+
+    if grep -nE 'p2\._patch(Size)?\b|p2\._patch\b' "$PATCHER_MAIN" >/dev/null; then
+        echo "[!] Failed to adapt iBoot64Patcher to the current libpatchfinder API"
+        exit 1
+    fi
+
     cmake -S . -B cmake-build-release \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_MAKE_PROGRAM="$(command -v make)" \
@@ -90,8 +114,6 @@ from pathlib import Path
 p = Path("sshrd.sh")
 s = p.read_text()
 
-# Build in CI without a physically attached device, while preserving the
-# upstream shell structure.
 darwin_old = '''elif [ "$oscheck" = 'Darwin' ]; then
     if ! (system_profiler SPUSBDataType SPUSBHostDataType 2> /dev/null | grep ' Apple Mobile Device (DFU Mode)' >> /dev/null); then
         echo "[*] Waiting for device in DFU mode"
