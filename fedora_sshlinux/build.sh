@@ -45,7 +45,7 @@ VERSION_ID="${FEDORA_RELEASE}"
 PRETTY_NAME="SSHLinux Fedora ${FEDORA_RELEASE}"
 EOF
 
-cat > "$ROOTFS/usr/local/bin/sshl​​inux-init" <<'EOF'
+cat > "$ROOTFS/usr/local/bin/linux-init" <<'EOF'
 #!/bin/sh
 set -eu
 
@@ -54,7 +54,7 @@ mountpoint -q /sys  || mount -t sysfs sysfs /sys || true
 mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev || true
 mountpoint -q /run  || mount -t tmpfs tmpfs /run || true
 
-mkdir -p /run/sshl​​inux /tmp /root
+mkdir -p /run/sshlinux /tmp /root
 chmod 1777 /tmp
 
 if command -v dropbear >/dev/null 2>&1; then
@@ -66,7 +66,7 @@ fi
 
 exec /bin/sh
 EOF
-chmod 0755 "$ROOTFS/usr/local/bin/sshl​​inux-init"
+chmod 0755 "$ROOTFS/usr/local/bin/linux-init"
 
 printf '%s\n' "$FEDORA_RELEASE" > "$OUT_DIR/version.txt"
 printf '%s\n' "$ARCH" > "$OUT_DIR/arch.txt"
