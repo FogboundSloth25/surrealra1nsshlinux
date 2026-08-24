@@ -32,18 +32,22 @@ Or omit the repository and let the script ask:
 ./sshlinux.sh build
 ```
 
-The script:
+The Fedora 44 launcher automatically installs its required packages and then:
 
-1. Reads `CPID`, `MODEL` and `PRODUCT` from `irecovery -q`.
+1. Reads `CPID`, `MODEL`, `PRODUCT` and `ECID` from `irecovery -q`.
 2. Authenticates through the GitHub CLI (`gh`) when necessary.
 3. Asks for the target iOS version.
-4. Finds a matching local SHSH/SHSH2 ticket, or asks for its local path.
-5. Dispatches `.github/workflows/build-sshlinux.yml` on a macOS runner.
-6. Streams the GitHub Actions log back into the same terminal.
-7. Downloads the successful `sshramdisk-<PRODUCT>` artifact.
-8. Extracts the ramdisk into `./sshramdisk/`.
+4. Looks for an existing local `.shsh`/`.shsh2` ticket.
+5. If none exists, queries `shsh.host` for a previously saved blob belonging to the device ECID.
+6. If no saved blob exists, installs/downloads `tsschecker` and asks Apple's TSS service whether the requested firmware is currently signed; when signed, it saves a fresh ticket automatically.
+7. Dispatches `.github/workflows/build-sshlinux.yml` on a macOS runner.
+8. Streams the GitHub Actions log back into the same terminal.
+9. Downloads the successful `sshramdisk-<PRODUCT>` artifact.
+10. Extracts the ramdisk into `./sshramdisk/`.
 
-The macOS runner never needs the physical iPhone/iPad. The local device identifiers are supplied to the workflow, while the workflow performs the IPSW/BuildManifest/ramdisk assembly on macOS.
+For an unsigned firmware with no previously saved blob, the script stops and explains that a new personalized SHSH cannot be created retroactively. The blob must have been saved earlier (locally or on a service such as shsh.host).
+
+The macOS runner never needs the physical iPhone/iPad. The local device identifiers and the resolved SHSH ticket are supplied to the workflow, while the workflow performs the IPSW/BuildManifest/ramdisk assembly on macOS.
 
 ### Boot
 
@@ -53,9 +57,9 @@ After a successful build:
 ./sshlinux.sh boot
 ```
 
-The launcher uses the local `./sshramdisk/`. When it is missing, it can look for a previous successful matching artifact in the configured GitHub repository and download it automatically.
+The launcher uses the local `./sshramdisk/` and never rebuilds it on Fedora.
 
-The personalized SHSH/SHSH2 ticket is not uploaded anywhere except as a workflow-dispatch input needed for the build; the macOS builder removes the temporary ticket from its workspace after creating the ramdisk. For a public repository, workflow inputs may be visible to users who can view workflow runs, so using a private repository is preferable when the ticket should not be exposed.
+The SHSH/SHSH2 ticket is transferred to the GitHub Actions run as a workflow input because it is required to construct the personalized IM4M. Use a private repository when the ticket should not be exposed to other people who can inspect workflow runs.
 
 ## Existing surrealra1n usage
 
