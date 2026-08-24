@@ -5,7 +5,7 @@ set -euo pipefail
 : "${DEVICE_ID:?DEVICE_ID is required}"
 : "${DEVICE_MODEL:?DEVICE_MODEL is required}"
 : "${DEVICE_CPID:?DEVICE_CPID is required}"
-: "${SHSH_URL:?SHSH_URL is required}"
+: "${LOCAL_SHSH:?LOCAL_SHSH is required}"
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$ROOT_DIR/ci/work-sshrd"
@@ -16,27 +16,19 @@ OUTPUT_DIR="$ROOT_DIR/sshramdisk"
 rm -rf "$WORK_DIR" "$OUTPUT_DIR"
 mkdir -p "$WORK_DIR" "$OUTPUT_DIR"
 
+test -s "$LOCAL_SHSH" || {
+    echo "[!] SHSH ticket is missing or empty: $LOCAL_SHSH"
+    exit 1
+}
+
 echo "[*] Cloning upstream SSHRD_Script"
 git clone --depth=1 https://github.com/verygenericname/SSHRD_Script.git "$UPSTREAM_DIR"
 cd "$UPSTREAM_DIR"
 git submodule update --init --recursive
 
 mkdir -p "$SHSH_DIR"
-
-case "$SHSH_URL" in
-  http://*|https://*)
-    curl -fL --retry 3 --retry-all-errors "$SHSH_URL" -o "$SHSH_DIR/${DEVICE_CPID}.shsh"
-    ;;
-  *)
-    echo "[!] SHSH_URL must be an http(s) URL"
-    exit 1
-    ;;
-esac
-
-[[ -s "$SHSH_DIR/${DEVICE_CPID}.shsh" ]] || {
-  echo "[!] Downloaded SHSH ticket is empty"
-  exit 1
-}
+cp "$LOCAL_SHSH" "$SHSH_DIR/${DEVICE_CPID}.shsh"
+chmod 600 "$SHSH_DIR/${DEVICE_CPID}.shsh"
 
 python3 - <<'PY'
 from pathlib import Path
@@ -82,23 +74,21 @@ fi
 '''
 
 if old not in s:
-    raise SystemExit("Could not find the SSHRD device-detection block")
+    raise SystemExit("Could not find upstream device detection block")
 s = s.replace(old, new, 1)
 p.write_text(s)
 PY
 
-# Run the upstream build path. hdiutil/hfsplus handling is intentionally left to
-# the upstream script, because the SSH ramdisk is built from an HFS+ image on macOS.
 chmod +x sshrd.sh
 ./sshrd.sh "$IOS_VERSION"
 
 for f in iBSS.img4 iBEC.img4 logo.img4 ramdisk.img4 devicetree.img4 kernelcache.img4; do
-  test -s "sshramdisk/$f"
-  cp "sshramdisk/$f" "$OUTPUT_DIR/$f"
+    test -s "sshramdisk/$f"
+    cp "sshramdisk/$f" "$OUTPUT_DIR/$f"
 done
 
 if [[ -s sshramdisk/trustcache.img4 ]]; then
-  cp sshramdisk/trustcache.img4 "$OUTPUT_DIR/trustcache.img4"
+    cp sshramdisk/trustcache.img4 "$OUTPUT_DIR/trustcache.img4"
 fi
 
 cp sshramdisk/version.txt "$OUTPUT_DIR/version.txt"
@@ -114,6 +104,10 @@ ios=$IOS_VERSION
 source=verygenericname/SSHRD_Script
 platform=macOS
 EOF
+
+# Remove any ticket material before the job finishes.
+rm -rf "$UPSTREAM_DIR/other/shsh/"*
+rm -rf "$WORK_DIR"
 
 echo "[*] SSH ramdisk built successfully"
 echo "[*] Output: $OUTPUT_DIR"
