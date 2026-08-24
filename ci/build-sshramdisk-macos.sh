@@ -93,6 +93,29 @@ if info_old not in s:
     raise SystemExit("Could not find upstream device-info block")
 s = s.replace(info_old, info_new, 1)
 
+# For modern iOS (darwin_major >= 24), upstream already extracts iBSS/iBEC
+# directly with img4 and does not require gaster to decrypt them. Skip the
+# DFU-only gaster calls that otherwise block a device-free CI build.
+gaster_old = '''"$oscheck"/gaster pwn > /dev/null
+# A10X / T2 workaround
+
+"$oscheck"/gaster decrypt_kbag 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 > /dev/null || true
+
+"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
+'''
+gaster_new = '''if [ "$darwin_major" -ge 24 ]; then
+    echo "[*] Modern iOS detected (darwin_major=$darwin_major); skipping DFU-only gaster operations"
+else
+    echo "[!] Device-free build is only supported for modern iOS where SSHRD uses IMG4 extraction without gaster decryption"
+    exit 1
+fi
+
+"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
+'''
+if gaster_old not in s:
+    raise SystemExit("Could not find upstream build-time gaster block")
+s = s.replace(gaster_old, gaster_new, 1)
+
 # Syntax-check the patched script before the actual build runs.
 Path("sshrd-patched.sh").write_text(s)
 PY
@@ -126,6 +149,8 @@ cpid=$DEVICE_CPID
 ios=$IOS_VERSION
 source=verygenericname/SSHRD_Script
 platform=macOS
+device_free=true
+gaster_build_pwn=skipped_for_modern_ios
 EOF
 
 # Remove ticket/build material before the job finishes.
