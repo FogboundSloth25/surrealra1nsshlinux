@@ -39,7 +39,10 @@ build_cryptiiiic_ibootpatcher() {
     dep_root="$PATCHER_DIR/dep_root"
 
     echo "[*] Downloading Cryptiiiic static macOS dependencies"
-    curl -fL --retry 3 --retry-all-errors "$dep_url" -o "$dep_archive"
+    if ! curl -fL --retry 3 --retry-all-errors "$dep_url" -o "$dep_archive"; then
+        echo "[!] Normal TLS verification failed for cdn.cryptiiiic.com; retrying only this known archive without certificate verification."
+        curl -kfL --retry 3 --retry-all-errors "$dep_url" -o "$dep_archive"
+    fi
 
     if ! command -v unzstd >/dev/null 2>&1; then
         brew install zstd >/dev/null
