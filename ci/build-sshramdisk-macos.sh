@@ -32,13 +32,12 @@ chmod 600 "$SHSH_DIR/${DEVICE_CPID}.shsh"
 
 python3 - <<'PY'
 from pathlib import Path
-import re
 
 p = Path("sshrd.sh")
 s = p.read_text()
 
 # Build in CI without a physically attached device, while preserving the
-# upstream if/elif structure and the rest of its build pipeline.
+# upstream shell structure.
 darwin_old = '''elif [ "$oscheck" = 'Darwin' ]; then
     if ! (system_profiler SPUSBDataType SPUSBHostDataType 2> /dev/null | grep ' Apple Mobile Device (DFU Mode)' >> /dev/null); then
         echo "[*] Waiting for device in DFU mode"
@@ -92,19 +91,22 @@ if info_old not in s:
     raise SystemExit("Could not find upstream device-info block")
 s = s.replace(info_old, info_new, 1)
 
-# The upstream build path unconditionally performs gaster pwn/decrypt_kbag
-# before downloading firmware. Those operations require a real DFU device and
-# are not needed for modern firmware where the later darwin_major >= 24 path
-# uses img4 directly for iBSS/iBEC. Remove only those build-time calls; keep
-# gaster intact for the separate boot/reset commands.
-build_gaster_patterns = [
-    re.compile(r'^[ \t]*"\$oscheck"/gaster pwn > /dev/null[ \t]*\n', re.M),
-    re.compile(r'^\s*# A10X / T2 workaround\n\s*"\$oscheck"/gaster decrypt_kbag [^\n]*\n', re.M),
-]
-if not any(p.search(s) for p in build_gaster_patterns):
+# Remove ONLY the build-time gaster calls. Do not touch the reset/boot pwn
+# commands earlier in the script. The exact block is unique in the upstream
+# build path and is followed immediately by img4tool IM4M creation.
+build_block = '''\n\n"$oscheck"/gaster pwn > /dev/null
+# A10X / T2 workaround
+"$oscheck"/gaster decrypt_kbag 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 > /dev/null || true
+"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
+'''
+build_replacement = '''\n\n# Building in CI has no attached DFU device. For modern firmware the later
+# darwin_major >= 24 path decrypts iBSS/iBEC with img4 directly, so these
+# device-side gaster calls are intentionally omitted here.
+"$oscheck"/img4tool -e -s other/shsh/"${check}".shsh -m work/IM4M
+'''
+if build_block not in s:
     raise SystemExit("Could not find upstream build-time gaster block")
-for pattern in build_gaster_patterns:
-    s = pattern.sub('', s, count=1)
+s = s.replace(build_block, build_replacement, 1)
 
 Path("sshrd-patched.sh").write_text(s)
 PY
