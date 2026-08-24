@@ -1,0 +1,64 @@
+name: Build Fedora SSHLinux payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_release:
+        description: Fedora release to build
+        required: true
+        default: "44"
+        type: string
+      architecture:
+        description: Target architecture
+        required: true
+        default: aarch64
+        type: choice
+        options:
+          - aarch64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Fedora userspace payload
+        env:
+          FEDORA_RELEASE: ${{ inputs.fedora_release }}
+          ARCH: ${{ inputs.architecture }}
+        run: |
+          docker run --rm \
+            --privileged \
+            -e FEDORA_RELEASE="$FEDORA_RELEASE" \
+            -e ARCH="$ARCH" \
+            -v "$PWD:/work" \
+            -w /work \
+            fedora:${FEDORA_RELEASE} \
+            bash -lc '
+              dnf -y install dnf-plugins-core cpio gzip findutils
+              chmod +x fedora_sshlinux/build.sh
+              ./fedora_sshlinux/build.sh
+            '
+
+      - name: Verify payload
+        run: |
+          test -s sshramdisk/fedora-payload.cpio.gz
+          test -f sshramdisk/README
+          file sshramdisk/fedora-payload.cpio.gz || true
+          gzip -t sshramdisk/fedora-payload.cpio.gz
+
+      - name: Package artifact
+        run: |
+          mkdir -p release
+          tar -czf release/sshl​​inux-fedora.tar.gz \
+            sshramdisk/fedora-payload.cpio.gz \
+            sshramdisk/README
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshlinux-fedora-${{ inputs.fedora_release }}-${{ inputs.architecture }}
+          path: release/sshl​​inux-fedora.tar.gz
+          if-no-files-found: error
