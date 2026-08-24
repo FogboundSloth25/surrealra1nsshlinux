@@ -38,7 +38,6 @@ env:
   DEVICE_ID: ${{ inputs.product }}
   DEVICE_MODEL: ${{ inputs.model }}
   DEVICE_CPID: ${{ inputs.cpid }}
-  SHSH_BASE64: ${{ inputs.shsh_base64 }}
 
 jobs:
   build:
@@ -50,10 +49,13 @@ jobs:
 
       - name: Decode SHSH ticket
         shell: bash
+        env:
+          SHSH_INPUT: ${{ inputs.shsh_base64 }}
         run: |
           set -euo pipefail
           mkdir -p ci/work-sshrd-input
-          printf '%s' "$SHSH_BASE64" | base64 --decode > "ci/work-sshrd-input/${DEVICE_CPID}.shsh"
+          printf '%s' "$SHSH_INPUT" | base64 --decode > "ci/work-sshrd-input/${DEVICE_CPID}.shsh"
+          unset SHSH_INPUT
           test -s "ci/work-sshrd-input/${DEVICE_CPID}.shsh"
           echo "[*] SHSH ticket received (${DEVICE_CPID})"
 
