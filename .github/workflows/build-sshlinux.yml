@@ -52,7 +52,7 @@ jobs:
       - name: Package artifact
         run: |
           mkdir -p release
-          tar -czf release/sshl​​inux-fedora.tar.gz \
+          tar -czf release/sshlinux-fedora.tar.gz \
             sshramdisk/fedora-payload.cpio.gz \
             sshramdisk/README
 
@@ -60,5 +60,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sshlinux-fedora-${{ inputs.fedora_release }}-${{ inputs.architecture }}
-          path: release/sshl​​inux-fedora.tar.gz
+          path: release/sshlinux-fedora.tar.gz
           if-no-files-found: error
