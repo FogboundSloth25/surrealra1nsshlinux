@@ -23,7 +23,7 @@ test -s "$LOCAL_SHSH" || {
 }
 
 build_cryptiiiic_ibootpatcher() {
-    local arch dep_url dep_archive dep_root
+    local arch dep_url dep_archive dep_root patch_header
     arch="$(uname -m)"
     case "$arch" in
         x86_64|arm64) ;;
@@ -53,9 +53,6 @@ build_cryptiiiic_ibootpatcher() {
     test -d "$dep_root/include" || { echo "[!] Missing dep_root/include after extraction"; exit 1; }
     test -d "$dep_root/lib" || { echo "[!] Missing dep_root/lib after extraction"; exit 1; }
 
-    # Cryptiiiic/iBoot64Patcher's current main.cpp uses libpatchfinder's
-    # historical private fields directly, while the bundled/current header
-    # exposes the supported public getters. Adapt only those source accesses.
     PATCHER_MAIN="$PATCHER_DIR/src/main.cpp"
     python3 - "$PATCHER_MAIN" <<'PY'
 from pathlib import Path
@@ -63,12 +60,8 @@ import sys
 
 p = Path(sys.argv[1])
 s = p.read_text()
-replacements = {
-    "p2._patchSize": "p2.getPatchSize()",
-    "p2._patch": "p2.getPatch()",
-}
-for old, new in replacements.items():
-    s = s.replace(old, new)
+s = s.replace("p2._patchSize", "p2.getPatchSize()")
+s = s.replace("p2._patch", "p2.getPatch()")
 p.write_text(s)
 PY
 
@@ -76,6 +69,22 @@ PY
         echo "[!] Failed to adapt iBoot64Patcher to the current libpatchfinder API"
         exit 1
     fi
+
+    patch_header="$dep_root/include/libpatchfinder/patch.hpp"
+    test -f "$patch_header" || { echo "[!] Missing libpatchfinder patch.hpp"; exit 1; }
+    python3 - "$patch_header" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+s = s.replace("inline const void *getPatch(){return _patch;}", "inline const void *getPatch() const {return _patch;}")
+s = s.replace("inline size_t getPatchSize(){return  _patchSize;}", "inline size_t getPatchSize() const {return _patchSize;}")
+p.write_text(s)
+PY
+
+    grep -F 'getPatch() const' "$patch_header" >/dev/null
+    grep -F 'getPatchSize() const' "$patch_header" >/dev/null
 
     cmake -S . -B cmake-build-release \
         -DCMAKE_BUILD_TYPE=Release \
