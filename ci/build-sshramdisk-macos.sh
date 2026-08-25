@@ -207,6 +207,22 @@ if build_block not in s:
     raise SystemExit("Could not find upstream build-time gaster block")
 s = s.replace(build_block, build_replacement, 1)
 
+# Cryptiiiic iBoot64Patcher can patch iBSS for this firmware, but its
+# optional NVRAM-unlock pattern may be unavailable on newer iBEC builds.
+# Preserve the normal -n path first, then retry without -n so the build can
+# continue with the boot-args/debug/signature patches that are available.
+ibec_old = '''"$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi`" -n
+'''
+ibec_new = '''IBOOT_BOOTARGS="rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi`"
+if ! "$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "$IBOOT_BOOTARGS" -n; then
+    echo "[!] NVRAM-unlock patch is unavailable for this iBEC; retrying without -n."
+    "$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "$IBOOT_BOOTARGS"
+fi
+'''
+if ibec_old not in s:
+    raise SystemExit("Could not find upstream iBEC patch invocation")
+s = s.replace(ibec_old, ibec_new, 1)
+
 Path("sshrd-patched.sh").write_text(s)
 PY
 
