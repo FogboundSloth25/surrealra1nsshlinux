@@ -89,41 +89,38 @@ fi
 '''
     text = replace_once(text, ibec_old, ibec_new, "iBEC patch invocation")
 
-    # Replace the fragile kernelcache extraction with a deterministic plistlib lookup.
-    # The generated shell is intentionally simple: no nested Python heredoc inside this script.
     anchor = '../"$oscheck"/pzb -g BuildManifest.plist "$ipswurl"\n'
     robust = '''../"$oscheck"/pzb -g BuildManifest.plist "$ipswurl"
 test -s BuildManifest.plist || { echo "[!] BuildManifest.plist was not downloaded"; exit 1; }
+echo "[*] BuildManifest downloaded; using model=$replace product=$deviceid"
 
 KERNELCACHE_PATH=$(python3 - "$replace" "$deviceid" BuildManifest.plist <<'PY'
 import plistlib
 import sys
 from pathlib import Path
 
-model = sys.argv[1].strip()
-product = sys.argv[2].strip()
+model = sys.argv[1].strip().upper()
+product = sys.argv[2].strip().upper()
 manifest = plistlib.loads(Path(sys.argv[3]).read_bytes())
 
 identities = manifest.get("BuildIdentities", [])
-keys = (model, model.upper(), product)
 for identity in identities:
     info = identity.get("Info", {})
-    candidates = [
-        str(info.get("DeviceClass", "")),
-        str(info.get("BoardConfig", "")),
-        str(info.get("ProductType", "")),
-        str(info.get("Variant", "")),
-    ]
-    if any(c in keys for c in candidates):
+    candidates = {
+        str(info.get("DeviceClass", "")).strip().upper(),
+        str(info.get("BoardConfig", "")).strip().upper(),
+        str(info.get("ProductType", "")).strip().upper(),
+        str(info.get("Variant", "")).strip().upper(),
+    }
+    if model in candidates or product in candidates:
         kc = identity.get("Manifest", {}).get("KernelCache", {}).get("Info", {}).get("Path")
         if kc:
             print(kc)
             raise SystemExit(0)
 
-# Broader fallback: product name and a kernelcache path in the same identity.
 for identity in identities:
     info = identity.get("Info", {})
-    if str(info.get("ProductType", "")) == product:
+    if str(info.get("ProductType", "")).strip().upper() == product:
         kc = identity.get("Manifest", {}).get("KernelCache", {}).get("Info", {}).get("Path")
         if kc:
             print(kc)
@@ -147,10 +144,6 @@ test -s "$KERNELCACHE_FILE" || {
 '''
     text = replace_once(text, anchor, robust, "BuildManifest download")
 
-    # Replace the later fragile kernelcache pzb command with the already resolved path.
-    old_kc = '''../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\\> -f2 |cut -d\\< -f1)" "$ipswurl"
-'''
-    # The upstream source has a literal variant of the same command; regex replacement below handles whitespace differences.
     text, count = re.subn(
         r'^\.\./"\$oscheck"/pzb -g "\$\(awk .*?kernelcache\.release.*?\)" "\$ipswurl"\n',
         '# KernelCache already downloaded using the structured manifest lookup above.\n',
@@ -161,17 +154,11 @@ test -s "$KERNELCACHE_FILE" || {
     if count != 1:
         raise RuntimeError("Could not replace upstream kernelcache pzb line")
 
-    # Replace all later kernelcache path expressions with the resolved filename.
     text = re.sub(
         r'work/"\$\(awk .*?kernelcache\.release.*?\)"',
         'work/"$KERNELCACHE_FILE"',
         text,
     )
-
-    # Inject an early manifest summary for diagnostics after BuildManifest download.
-    summary_anchor = 'test -s BuildManifest.plist || { echo "[!] BuildManifest.plist was not downloaded"; exit 1; }\n'
-    summary = summary_anchor + 'echo "[*] BuildManifest downloaded; using model=$replace product=$deviceid"\n'
-    text = replace_once(text, summary_anchor, summary, "manifest diagnostic anchor")
 
     path.write_text(text, encoding="utf-8")
     print(f"[+] Patched {path}")
