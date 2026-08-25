@@ -135,30 +135,49 @@ KERNELCACHE_FILE="${KERNELCACHE_PATH##*/}"
 echo "[*] KernelCache path: $KERNELCACHE_PATH"
 echo "[*] KernelCache file: $KERNELCACHE_FILE"
 ../"$oscheck"/pzb -g "$KERNELCACHE_PATH" "$ipswurl"
-test -s "$KERNELCACHE_FILE" || {
+if [ ! -s "$KERNELCACHE_FILE" ]; then
+    found="$(find . -type f -name "$KERNELCACHE_FILE" -print -quit)"
+    if [ -n "$found" ]; then
+        cp "$found" "$KERNELCACHE_FILE"
+    fi
+fi
+if [ ! -s "$KERNELCACHE_FILE" ]; then
     echo "[!] KernelCache download failed: $KERNELCACHE_FILE"
     echo "[!] Expected path: $KERNELCACHE_PATH"
+    find . -maxdepth 4 -type f -iname '*kernelcache*' -print || true
     exit 1
-}
+fi
 
+echo "[*] KernelCache ready: $(pwd)/$KERNELCACHE_FILE"
 '''
     text = replace_once(text, anchor, robust, "BuildManifest download")
 
-    text, count = re.subn(
-        r'^\.\./"\$oscheck"/pzb -g "\$\(awk .*?kernelcache\.release.*?\)" "\$ipswurl"\n',
+    # Remove any standalone later pzb request for kernelcache; the structured download above is authoritative.
+    text = re.sub(
+        r'^.*?pzb -g .*kernelcache\.release.*?\"\$ipswurl\"\s*\n',
         '# KernelCache already downloaded using the structured manifest lookup above.\n',
         text,
         count=1,
         flags=re.MULTILINE,
     )
-    if count != 1:
-        raise RuntimeError("Could not replace upstream kernelcache pzb line")
 
-    text = re.sub(
-        r'work/"\$\(awk .*?kernelcache\.release.*?\)"',
-        'work/"$KERNELCACHE_FILE"',
-        text,
-    )
+    # Deterministically replace the two later img4 kernelcache commands by their output target.
+    raw_pattern = re.compile(r'^.*?img4 -i work/.*kernelcache\.release.*?-o work/kcache\.raw.*$', re.MULTILINE)
+    out_pattern = re.compile(r'^.*?img4 -i work/.*kernelcache\.release.*?-o sshramdisk/kernelcache\.img4.*$', re.MULTILINE)
+    if not raw_pattern.search(text):
+        raise RuntimeError("Could not find upstream raw KernelCache img4 command")
+    if not out_pattern.search(text):
+        raise RuntimeError("Could not find upstream output KernelCache img4 command")
+
+    text = raw_pattern.sub('echo "[*] Extracting KernelCache: $KERNELCACHE_FILE"\n"$oscheck"/img4 -i work/"$KERNELCACHE_FILE" -o work/kcache.raw', text, count=1)
+    text = out_pattern.sub('"$oscheck"/img4 -i work/"$KERNELCACHE_FILE" -o sshramdisk/kernelcache.img4 -M work/IM4M -T rkrn -P work/kc.bpatch `if [ "$oscheck" = "Linux" ]; then echo "-J"; fi`', text, count=1)
+
+    # Add a final pre-kernelcache diagnostic guard.
+    marker = '"$oscheck"/KPlooshFinder work/kcache.raw work/kcache.patched'
+    guard = 'echo "[*] Workdir kernelcache candidates:"\nfind work -maxdepth 2 -type f -iname "*kernelcache*" -print || true\ntest -s work/kcache.raw || { echo "[!] Failed to extract KernelCache to work/kcache.raw"; exit 1; }\n' + marker
+    if marker not in text:
+        raise RuntimeError("Could not find KPlooshFinder kernelcache marker")
+    text = text.replace(marker, guard, 1)
 
     path.write_text(text, encoding="utf-8")
     print(f"[+] Patched {path}")
