@@ -181,13 +181,14 @@ deviceid=$("$oscheck"/irecovery -q | grep PRODUCT | sed 's/PRODUCT: //')
 ipswurl=$(curl -sL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$1'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
 '''
 info_new = '''check="$DEVICE_CPID"
-replace="$DEVICE_MODEL"
+replace="$(printf '%s' "$DEVICE_MODEL" | tr '[:lower:]' '[:upper:]')"
 deviceid="$DEVICE_ID"
 ipswurl=$(curl -fsSL "https://api.ipsw.me/v4/device/$deviceid?type=ipsw" | "$oscheck"/jq '.firmwares | .[] | select(.version=="'$IOS_VERSION'")' | "$oscheck"/jq -s '.[0] | .url' --raw-output)
 if [ -z "$ipswurl" ] || [ "$ipswurl" = "null" ]; then
     echo "[!] No IPSW found for $deviceid $IOS_VERSION"
     exit 1
 fi
+echo "[*] Manifest device class: $replace"
 '''
 if info_old not in s:
     raise SystemExit("Could not find upstream device-info block")
@@ -207,10 +208,6 @@ if build_block not in s:
     raise SystemExit("Could not find upstream build-time gaster block")
 s = s.replace(build_block, build_replacement, 1)
 
-# Cryptiiiic iBoot64Patcher can patch iBSS for this firmware, but its
-# optional NVRAM-unlock pattern may be unavailable on newer iBEC builds.
-# Preserve the normal -n path first, then retry without -n so the build can
-# continue with the boot-args/debug/signature patches that are available.
 ibec_old = '''"$oscheck"/iBoot64Patcher work/iBEC.dec work/iBEC.patched -b "rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi`" -n
 '''
 ibec_new = '''IBOOT_BOOTARGS="rd=md0 debug=0x2014e -v wdt=-1 `if [ -z "$2" ]; then :; else echo "$2=$3"; fi` `if [ "$check" = '0x8960' ] || [ "$check" = '0x7000' ] || [ "$check" = '0x7001' ]; then echo "nand-enable-reformat=1 -restore"; fi`"
@@ -222,6 +219,60 @@ fi
 if ibec_old not in s:
     raise SystemExit("Could not find upstream iBEC patch invocation")
 s = s.replace(ibec_old, ibec_new, 1)
+
+# BuildManifest is a plist, so resolve the exact BuildIdentity structurally
+# instead of relying only on case-sensitive awk matching. This is especially
+# important for A12 firmware where the board/model identifier is D321AP.
+kcache_marker = '''../"$oscheck"/pzb -g "$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" BuildManifest.plist | grep '<string>' |cut -d\\> -f2 |cut -d\\< -f1)" "$ipswurl"
+'''
+kcache_replacement = '''KERNELCACHE_PATH="$(python3 - <<PY
+import plistlib
+from pathlib import Path
+manifest = Path("BuildManifest.plist")
+with manifest.open("rb") as f:
+    data = plistlib.load(f)
+want = "${replace}".upper()
+for identity in data.get("BuildIdentities", []):
+    info = identity.get("Info", {})
+    candidates = {
+        str(info.get("DeviceClass", "")).upper(),
+        str(info.get("BoardConfig", "")).upper(),
+        str(info.get("ProductType", "")).upper(),
+    }
+    if want in candidates:
+        path = identity.get("Manifest", {}).get("KernelCache", {}).get("Info", {}).get("Path")
+        if path:
+            print(path)
+            break
+PY
+)"
+if [ -z "$KERNELCACHE_PATH" ]; then
+    echo "[!] Could not resolve KernelCache path for $replace from BuildManifest.plist"
+    exit 1
+fi
+KERNELCACHE_BASENAME="${KERNELCACHE_PATH##*/}"
+echo "[*] KernelCache path: $KERNELCACHE_PATH"
+echo "[*] KernelCache file: $KERNELCACHE_BASENAME"
+../"$oscheck"/pzb -g "$KERNELCACHE_PATH" "$ipswurl"
+if [ ! -s "$KERNELCACHE_BASENAME" ]; then
+    found="$(find . -type f -name "$KERNELCACHE_BASENAME" -print -quit)"
+    if [ -n "$found" ] && [ "$found" != "./$KERNELCACHE_BASENAME" ]; then
+        mv "$found" "$KERNELCACHE_BASENAME"
+    fi
+fi
+if [ ! -s "$KERNELCACHE_BASENAME" ]; then
+    echo "[!] KernelCache download failed: expected $KERNELCACHE_BASENAME"
+    find . -maxdepth 3 -type f -name '*kernelcache*' -print || true
+    exit 1
+fi
+'''
+if kcache_marker not in s:
+    raise SystemExit("Could not find upstream KernelCache pzb line")
+s = s.replace(kcache_marker, kcache_replacement, 1)
+
+# Use the resolved basename for all later kernelcache operations.
+kcache_awk = '"$(awk "/""${replace}""/{x=1}x&&/kernelcache.release/{print;exit}" work/BuildManifest.plist | grep \'<string>\' |cut -d\\> -f2 |cut -d\\< -f1)"'
+s = s.replace(kcache_awk, '"$KERNELCACHE_BASENAME"')
 
 Path("sshrd-patched.sh").write_text(s)
 PY
