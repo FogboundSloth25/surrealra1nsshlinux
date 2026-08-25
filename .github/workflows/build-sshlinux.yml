@@ -47,6 +47,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize device model for BuildManifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized_model="$(printf '%s' '${{ inputs.model }}' | tr '[:lower:]' '[:upper:]')"
+          echo "[*] Manifest device model: $normalized_model"
+          echo "DEVICE_MODEL=$normalized_model" >> "$GITHUB_ENV"
+
       - name: Decode SHSH ticket
         shell: bash
         env:
