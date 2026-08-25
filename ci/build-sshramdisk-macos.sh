@@ -23,7 +23,7 @@ test -s "$LOCAL_SHSH" || {
 }
 
 build_cryptiiiic_ibootpatcher() {
-    local arch dep_url dep_archive dep_root patch_header
+    local arch dep_url dep_archive dep_root patch_header patcher_bin
     arch="$(uname -m)"
     case "$arch" in
         x86_64|arm64) ;;
@@ -96,14 +96,25 @@ PY
         -DNO_PKGCFG=1
 
     cmake --build cmake-build-release --parallel "$(sysctl -n hw.ncpu)"
-    test -x "$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher" || {
+
+    if [ -x "$PATCHER_DIR/cmake-build-release/iBoot64Patcher" ]; then
+        patcher_bin="$PATCHER_DIR/cmake-build-release/iBoot64Patcher"
+    elif [ -x "$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher" ]; then
+        patcher_bin="$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher"
+    else
+        patcher_bin="$(find "$PATCHER_DIR/cmake-build-release" -type f -name iBoot64Patcher -perm -111 -print -quit)"
+    fi
+
+    test -n "$patcher_bin" && test -x "$patcher_bin" || {
         echo "[!] Cryptiiiic iBoot64Patcher build did not produce a binary"
+        echo "[!] CMake build tree: $PATCHER_DIR/cmake-build-release"
+        find "$PATCHER_DIR/cmake-build-release" -maxdepth 3 -type f -name '*iBoot*' -print || true
         exit 1
     }
 
-    cp "$PATCHER_DIR/cmake-build-release/src/iBoot64Patcher" "$UPSTREAM_DIR/Darwin/iBoot64Patcher"
+    cp "$patcher_bin" "$UPSTREAM_DIR/Darwin/iBoot64Patcher"
     chmod 0755 "$UPSTREAM_DIR/Darwin/iBoot64Patcher"
-    echo "[*] Using freshly built Cryptiiiic iBoot64Patcher"
+    echo "[*] Using freshly built Cryptiiiic iBoot64Patcher: $patcher_bin"
 }
 
 echo "[*] Cloning upstream SSHRD_Script"
