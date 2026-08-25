@@ -124,6 +124,13 @@ git submodule update --init --recursive
 
 build_cryptiiiic_ibootpatcher
 
+# build_cryptiiiic_ibootpatcher changes cwd; explicitly return to SSHRD root.
+cd "$UPSTREAM_DIR"
+test -f "$UPSTREAM_DIR/sshrd.sh" || {
+    echo "[!] Upstream SSHRD script not found: $UPSTREAM_DIR/sshrd.sh"
+    exit 1
+}
+
 mkdir -p "$SHSH_DIR"
 cp "$LOCAL_SHSH" "$SHSH_DIR/${DEVICE_CPID}.shsh"
 chmod 600 "$SHSH_DIR/${DEVICE_CPID}.shsh"
